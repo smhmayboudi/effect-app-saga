@@ -29,7 +29,10 @@
     "changeset-publish": "pnpm build && TEST_DIST= pnpm vitest && changeset publish"
   },
   "dependencies": {
-    "effect": "latest"
+    "@effect/platform": "latest",
+    "@effect/platform-node": "latest",
+    "effect": "latest",
+    "uuid": "^9.0.0"
   },
   "devDependencies": {
     "@babel/cli": "^7.24.8",
