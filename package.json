@@ -32,7 +32,7 @@
     "@effect/platform": "latest",
     "@effect/platform-node": "latest",
     "effect": "latest",
-    "uuid": "^9.0.0"
+    "uuid": "^13.0.0"
   },
   "devDependencies": {
     "@babel/cli": "^7.24.8",
