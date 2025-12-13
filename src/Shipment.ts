@@ -15,11 +15,14 @@ export const ShipmentSchema = Schema.Struct({
   idempotencyKey: IdempotencyKey,
   orderId: OrderId,
   customerId: CustomerId,
-  status: Schema.Literal("PENDING", "SHIPPED", "DELIVERED", "CANCELLED").annotations({ description: "Status" }), // default: PENDING
-  sagaLogId: SagaLogId,
-  createdAt: Schema.Date.annotations({ description: "Created At" }), // default: Date.now
-  updatedAt: Schema.Date.annotations({ description: "Updated At" }),
-  deletedAt: Schema.NullOr(Schema.Date).annotations({ description: "Delete At" })
+  status: Schema.optionalWith(
+    Schema.Literal("PENDING", "SHIPPED", "DELIVERED", "CANCELLED").annotations({ description: "Status" }),
+    { default: () => "PENDING" }
+  ),
+  sagaLogId: SagaLogId
+  // createdAt: Schema.optionalWith(Schema.Date.annotations({ description: "Created At" }), { default: () => new Date() }),
+  // updatedAt: Schema.Date.annotations({ description: "Updated At" }),
+  // deletedAt: Schema.NullOr(Schema.Date).annotations({ description: "Delete At" })
 }).pipe(
   Schema.annotations({ description: "Shipment", identifier: "Shipment" })
 )

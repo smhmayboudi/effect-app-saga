@@ -29,14 +29,20 @@ export const OutboxSchema = Schema.Struct({
   targetService: Schema.Literal("payment", "inventory", "shipping", "order")
     .annotations({ description: "Target Service" }),
   targetEndpoint: Schema.String.annotations({ description: "Target Endpoint" }),
-  published: Schema.Boolean.annotations({ description: "Published" }), // default: false
-  publishedAt: Schema.NullOr(Schema.Date).annotations({ description: "Published At" }), // default: null
-  publishAttempts: Schema.Number.annotations({ description: "Publish Attempts" }), // default: 0
-  maxRetries: Schema.Number.annotations({ description: "Max Retries" }), // default: 3
-  lastError: Schema.NullOr(Schema.String).annotations({ description: "Last Error" }), // default: null
-  createdAt: Schema.Date.annotations({ description: "Created At" }), // default: Date.now
-  updatedAt: Schema.Date.annotations({ description: "Updated At" }),
-  deletedAt: Schema.NullOr(Schema.Date).annotations({ description: "Delete At" })
+  published: Schema.optionalWith(Schema.Boolean.annotations({ description: "Published" }), { default: () => false }),
+  publishedAt: Schema.optionalWith(Schema.NullOr(Schema.Date).annotations({ description: "Published At" }), {
+    default: () => null
+  }),
+  publishAttempts: Schema.optionalWith(Schema.Number.annotations({ description: "Publish Attempts" }), {
+    default: () => 0
+  }),
+  maxRetries: Schema.optionalWith(Schema.Number.annotations({ description: "Max Retries" }), { default: () => 3 }),
+  lastError: Schema.optionalWith(Schema.NullOr(Schema.String).annotations({ description: "Last Error" }), {
+    default: () => null
+  }),
+  createdAt: Schema.optionalWith(Schema.Date.annotations({ description: "Created At" }), { default: () => new Date() })
+  // updatedAt: Schema.Date.annotations({ description: "Updated At" }),
+  // deletedAt: Schema.NullOr(Schema.Date).annotations({ description: "Delete At" })
 }).pipe(
   Schema.annotations({ description: "Outbox", identifier: "Outbox" })
 )
