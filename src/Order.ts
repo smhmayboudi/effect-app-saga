@@ -107,7 +107,7 @@ export const OrderHttpApiLive = HttpApiBuilder.group(
       ({ headers: { "idempotency-key": idempotencyKey }, payload: { customerId, productId, quantity, totalPrice } }) =>
         Effect.gen(function*() {
           yield* Console.log(
-            `[Order Service] Order start ${{ customerId, productId, quantity, totalPrice }}`
+            `[Order Service] Order start ${{ idempotencyKey, customerId, productId, quantity, totalPrice }}`
           )
           // Check if this saga was already started with this idempotency key
           const existingSaga = await SagaLog.findOne({ idempotencyKey })
@@ -242,6 +242,7 @@ export const OrderHttpApiLive = HttpApiBuilder.group(
           )
 
           if (!order) {
+            // throw new Error("Order not found")
             return {
               message: "Order not found",
               success: false
@@ -264,6 +265,7 @@ export const OrderHttpApiLive = HttpApiBuilder.group(
         const order = await Order.findOne({ orderId })
 
         if (!order) {
+          // throw new Error("Order not found")
           return {
             message: "Order not found",
             success: false

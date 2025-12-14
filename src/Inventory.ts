@@ -115,7 +115,7 @@ export const InventoryHttpApiLive = HttpApiBuilder.group(
       ({ headers: { "idempotency-key": idempotencyKey }, payload: { orderId, productId, quantity, sagaLogId } }) =>
         Effect.gen(function*() {
           yield* Console.log(
-            `[Inventory Service] Inventory update ${{ orderId, productId, quantity, sagaLogId }}`
+            `[Inventory Service] Inventory update ${{ idempotencyKey, orderId, productId, quantity, sagaLogId }}`
           )
           const existingInventoryLog = await Inventory.findOne({
             lastIdempotencyKey: idempotencyKey
@@ -209,7 +209,7 @@ export const InventoryHttpApiLive = HttpApiBuilder.group(
       ({ headers: { "idempotency-key": idempotencyKey }, payload: { orderId, productId, quantity, sagaLogId } }) =>
         Effect.gen(function*() {
           yield* Console.log(
-            `[Inventory Service] Inventory compensate ${{ orderId, productId, quantity, sagaLogId }}`
+            `[Inventory Service] Inventory compensate ${{ idempotencyKey, orderId, productId, quantity, sagaLogId }}`
           )
           // Check if already compensated
           const inventoryC = await Inventory.findOne({ compensationKey: idempotencyKey, orderId })
