@@ -25,7 +25,7 @@ export const OrderId = Schema.UUID.pipe(
 )
 export type OrderId = typeof OrderId.Type
 
-export const OrderSchema = Schema.Struct({
+const OrderSchema = Schema.Struct({
   customerId: CustomerId,
   orderId: OrderId,
   productId: ProductId,
@@ -42,13 +42,13 @@ export const OrderSchema = Schema.Struct({
 }).pipe(
   Schema.annotations({ description: "Order", identifier: "Order" })
 )
-export type ServiceSchema = typeof OrderSchema.Type
+type ServiceSchema = typeof OrderSchema.Type
 
-export class Order extends Schema.Class<Order>("Order")(OrderSchema) {
+class Order extends Schema.Class<Order>("Order")(OrderSchema) {
   static decodeUnknown = Schema.decodeUnknown(Order)
 }
 
-export const OrderStartRequest = Schema.Struct({
+const OrderStartRequest = Schema.Struct({
   customerId: CustomerId,
   productId: ProductId,
   quantity: Schema.Number.annotations({ description: "Quantity" }),
@@ -56,16 +56,16 @@ export const OrderStartRequest = Schema.Struct({
 }).pipe(
   Schema.annotations({ description: "Order Start Request", identifier: "OrderStartRequest" })
 )
-export type OrderStartRequest = typeof OrderStartRequest.Type
+type OrderStartRequest = typeof OrderStartRequest.Type
 
-export const OrderCompensateRequest = Schema.Struct({
+const OrderCompensateRequest = Schema.Struct({
   orderId: OrderId
 }).pipe(
   Schema.annotations({ description: "Order Compensate Request", identifier: "OrderCompensateRequest" })
 )
-export type OrderCompensateRequest = typeof OrderCompensateRequest.Type
+type OrderCompensateRequest = typeof OrderCompensateRequest.Type
 
-export class OrderHttpApiGroup extends HttpApiGroup.make("order")
+class OrderHttpApiGroup extends HttpApiGroup.make("order")
   .add(
     HttpApiEndpoint.post("start", "/start")
       .addSuccess(Schema.Struct({}))
@@ -95,10 +95,14 @@ export class OrderHttpApiGroup extends HttpApiGroup.make("order")
   .prefix("/order")
 {}
 
-export const Api = HttpApi.make("api")
+const Api = HttpApi.make("api")
   .add(OrderHttpApiGroup)
+  .annotate(OpenApi.Description, "Manage Order API")
+  .annotate(OpenApi.Summary, "Manage Order API")
+  .annotate(OpenApi.Title, "Order API")
+  .prefix("/api/v1")
 
-export const OrderHttpApiLive = HttpApiBuilder.group(
+const OrderHttpApiLive = HttpApiBuilder.group(
   Api,
   "order",
   (handlers) => {
@@ -208,7 +212,7 @@ export const OrderHttpApiLive = HttpApiBuilder.group(
               },
               targetService: "payment",
               targetEndpoint: "/payments/process-payment",
-              published: false
+              isPublished: false
             })
 
             await outboxEntry.save({ session })
@@ -280,7 +284,7 @@ export const OrderHttpApiLive = HttpApiBuilder.group(
   }
 )
 
-export const ApiLive = HttpApiBuilder.api(Api)
+const ApiLive = HttpApiBuilder.api(Api)
   .pipe(Layer.provide(OrderHttpApiLive))
 
 const gracefulShutdown = <A, E, R>(layer: Layer.Layer<A, E, R>) =>

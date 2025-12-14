@@ -19,7 +19,7 @@ import { Outbox } from "./Outbox.js"
 import { ProductId } from "./Product.js"
 import { SagaLog, SagaLogId } from "./SagaLog.js"
 
-export const InventorySchemaStruct = Schema.Struct({
+const InventorySchemaStruct = Schema.Struct({
   productId: ProductId,
   quantity: Schema.Number.annotations({ description: "Quantity" }),
   reservedQuantity: Schema.optionalWith(Schema.Number.annotations({ description: "Reserved Quantity" }), {
@@ -31,13 +31,13 @@ export const InventorySchemaStruct = Schema.Struct({
 }).pipe(
   Schema.annotations({ description: "InventoryData", identifier: "InventoryData" })
 )
-export type InventorySchemaStruct = typeof InventorySchemaStruct.Type
+type InventorySchemaStruct = typeof InventorySchemaStruct.Type
 
-export class Inventory extends Schema.Class<Inventory>("Inventory")(InventorySchemaStruct) {
+class Inventory extends Schema.Class<Inventory>("Inventory")(InventorySchemaStruct) {
   static decodeUnknown = Schema.decodeUnknown(InventorySchemaStruct)
 }
 
-export const InventoryUpdateRequest = Schema.Struct({
+const InventoryUpdateRequest = Schema.Struct({
   orderId: OrderId,
   productId: ProductId,
   quantity: Schema.Number.annotations({ description: "Quantity" }),
@@ -45,9 +45,9 @@ export const InventoryUpdateRequest = Schema.Struct({
 }).pipe(
   Schema.annotations({ description: "Inventory Update Request", identifier: "InventoryUpdateRequest" })
 )
-export type InventoryUpdateRequest = typeof InventoryUpdateRequest.Type
+type InventoryUpdateRequest = typeof InventoryUpdateRequest.Type
 
-export const InventoryCompensateRequest = Schema.Struct({
+const InventoryCompensateRequest = Schema.Struct({
   orderId: OrderId,
   productId: ProductId,
   quantity: Schema.Number.annotations({ description: "Quantity" }),
@@ -55,17 +55,17 @@ export const InventoryCompensateRequest = Schema.Struct({
 }).pipe(
   Schema.annotations({ description: "Inventory Compensate Request", identifier: "InventoryCompensateRequest" })
 )
-export type InventoryCompensateRequest = typeof InventoryCompensateRequest.Type
+type InventoryCompensateRequest = typeof InventoryCompensateRequest.Type
 
-export const InventoryInitializeRequest = Schema.Struct({
+const InventoryInitializeRequest = Schema.Struct({
   productId: ProductId,
   quantity: Schema.Number.annotations({ description: "Quantity" })
 }).pipe(
   Schema.annotations({ description: "Inventory Compensate Request", identifier: "InventoryInitializeRequest" })
 )
-export type InventoryInitializeRequest = typeof InventoryInitializeRequest.Type
+type InventoryInitializeRequest = typeof InventoryInitializeRequest.Type
 
-export class InventoryHttpApiGroup extends HttpApiGroup.make("inventory")
+class InventoryHttpApiGroup extends HttpApiGroup.make("inventory")
   .add(
     HttpApiEndpoint.post("update", "/update")
       .addSuccess(Schema.Struct({}))
@@ -103,10 +103,14 @@ export class InventoryHttpApiGroup extends HttpApiGroup.make("inventory")
   .prefix("/inventory")
 {}
 
-export const Api = HttpApi.make("api")
+const Api = HttpApi.make("api")
   .add(InventoryHttpApiGroup)
+  .annotate(OpenApi.Description, "Manage Inventory API")
+  .annotate(OpenApi.Summary, "Manage Inventory API")
+  .annotate(OpenApi.Title, "Inventory API")
+  .prefix("/api/v1")
 
-export const InventoryHttpApiLive = HttpApiBuilder.group(
+const InventoryHttpApiLive = HttpApiBuilder.group(
   Api,
   "inventory",
   (handlers) => {
@@ -195,7 +199,7 @@ export const InventoryHttpApiLive = HttpApiBuilder.group(
             },
             targetService: "shipping",
             targetEndpoint: "/shipments/deliver-order",
-            published: false
+            isPublished: false
           })
 
           await outboxEntry.save()
@@ -295,7 +299,7 @@ export const InventoryHttpApiLive = HttpApiBuilder.group(
   }
 )
 
-export const ApiLive = HttpApiBuilder.api(Api)
+const ApiLive = HttpApiBuilder.api(Api)
   .pipe(Layer.provide(InventoryHttpApiLive))
 
 const gracefulShutdown = <A, E, R>(layer: Layer.Layer<A, E, R>) =>

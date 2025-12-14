@@ -10,7 +10,7 @@ export const SagaLogId = Schema.UUID.pipe(
 )
 export type SagaLogId = typeof SagaLogId.Type
 
-export const SagaLogSchema = Schema.Struct({
+const SagaLogSchema = Schema.Struct({
   customerId: CustomerId,
   idempotencyKey: IdempotencyKey,
   orderId: Schema.optionalWith(Schema.NullOr(OrderId), { default: () => null }),
@@ -47,7 +47,7 @@ export const SagaLogSchema = Schema.Struct({
 }).pipe(
   Schema.annotations({ description: "SagaLog", identifier: "SagaLog" })
 )
-export type ServiceSchema = typeof SagaLogSchema.Type
+type ServiceSchema = typeof SagaLogSchema.Type
 
 export class SagaLog extends Schema.Class<SagaLog>("SagaLog")(SagaLogSchema) {
   static decodeUnknown = Schema.decodeUnknown(SagaLog)

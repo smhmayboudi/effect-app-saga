@@ -18,13 +18,13 @@ import { IdempotencyKey } from "./IdempotencyKey.js"
 import { OrderId } from "./Order.js"
 import { SagaLog, SagaLogId } from "./SagaLog.js"
 
-export const ShippingId = Schema.UUID.pipe(
+const ShippingId = Schema.UUID.pipe(
   Schema.brand("ShippingId"),
   Schema.annotations({ description: "Shipping Identification" })
 )
-export type ShippingId = typeof ShippingId.Type
+type ShippingId = typeof ShippingId.Type
 
-export const ShippingSchema = Schema.Struct({
+const ShippingSchema = Schema.Struct({
   customerId: CustomerId,
   idempotencyKey: IdempotencyKey,
   orderId: OrderId,
@@ -40,30 +40,30 @@ export const ShippingSchema = Schema.Struct({
 }).pipe(
   Schema.annotations({ description: "Shipping", identifier: "Shipping" })
 )
-export type ServiceSchema = typeof ShippingSchema.Type
+type ServiceSchema = typeof ShippingSchema.Type
 
-export class Shipping extends Schema.Class<Shipping>("Shipping")(ShippingSchema) {
+class Shipping extends Schema.Class<Shipping>("Shipping")(ShippingSchema) {
   static decodeUnknown = Schema.decodeUnknown(Shipping)
 }
 
-export const ShippingDeliverRequest = Schema.Struct({
+const ShippingDeliverRequest = Schema.Struct({
   customerId: CustomerId,
   orderId: OrderId,
   sagaLogId: SagaLogId
 }).pipe(
   Schema.annotations({ description: "Shipping Deliver Request", identifier: "ShippingDeliverRequest" })
 )
-export type ShippingDeliverRequest = typeof ShippingDeliverRequest.Type
+type ShippingDeliverRequest = typeof ShippingDeliverRequest.Type
 
-export const ShippingCancelRequest = Schema.Struct({
+const ShippingCancelRequest = Schema.Struct({
   orderId: OrderId,
   sagaLogId: SagaLogId
 }).pipe(
   Schema.annotations({ description: "Shipping Cancel Request", identifier: "ShippingCancelRequest" })
 )
-export type ShippingCancelRequest = typeof ShippingCancelRequest.Type
+type ShippingCancelRequest = typeof ShippingCancelRequest.Type
 
-export class ShippingHttpApiGroup extends HttpApiGroup.make("shipping")
+class ShippingHttpApiGroup extends HttpApiGroup.make("shipping")
   .add(
     HttpApiEndpoint.post("deliver", "/deliver")
       .addSuccess(Schema.Struct({}))
@@ -93,10 +93,14 @@ export class ShippingHttpApiGroup extends HttpApiGroup.make("shipping")
   .prefix("/shipping")
 {}
 
-export const Api = HttpApi.make("api")
+const Api = HttpApi.make("api")
   .add(ShippingHttpApiGroup)
+  .annotate(OpenApi.Description, "Manage Shipping API")
+  .annotate(OpenApi.Summary, "Manage Shipping API")
+  .annotate(OpenApi.Title, "Shipping API")
+  .prefix("/api/v1")
 
-export const ShippingHttpApiLive = HttpApiBuilder.group(
+const ShippingHttpApiLive = HttpApiBuilder.group(
   Api,
   "shipping",
   (handlers) => {
@@ -236,7 +240,7 @@ export const ShippingHttpApiLive = HttpApiBuilder.group(
   }
 )
 
-export const ApiLive = HttpApiBuilder.api(Api)
+const ApiLive = HttpApiBuilder.api(Api)
   .pipe(Layer.provide(ShippingHttpApiLive))
 
 const gracefulShutdown = <A, E, R>(layer: Layer.Layer<A, E, R>) =>

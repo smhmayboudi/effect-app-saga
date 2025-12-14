@@ -19,13 +19,13 @@ import { OrderId } from "./Order.js"
 import { EventId, Outbox } from "./Outbox.js"
 import { SagaLog, SagaLogId } from "./SagaLog.js"
 
-export const PaymentId = Schema.UUID.pipe(
+const PaymentId = Schema.UUID.pipe(
   Schema.brand("PaymentId"),
   Schema.annotations({ description: "Payment Identification" })
 )
-export type PaymentId = typeof PaymentId.Type
+type PaymentId = typeof PaymentId.Type
 
-export const PaymentSchema = Schema.Struct({
+const PaymentSchema = Schema.Struct({
   amount: Schema.Number.annotations({ description: "Amount" }),
   customerId: CustomerId,
   idempotencyKey: IdempotencyKey,
@@ -42,13 +42,13 @@ export const PaymentSchema = Schema.Struct({
 }).pipe(
   Schema.annotations({ description: "Payment", identifier: "Payment" })
 )
-export type ServiceSchema = typeof PaymentSchema.Type
+type ServiceSchema = typeof PaymentSchema.Type
 
-export class Payment extends Schema.Class<Payment>("Payment")(PaymentSchema) {
+class Payment extends Schema.Class<Payment>("Payment")(PaymentSchema) {
   static decodeUnknown = Schema.decodeUnknown(Payment)
 }
 
-export const PaymentProcessRequest = Schema.Struct({
+const PaymentProcessRequest = Schema.Struct({
   amount: Schema.Number.annotations({ description: "Amount" }),
   customerId: CustomerId,
   orderId: OrderId,
@@ -56,17 +56,17 @@ export const PaymentProcessRequest = Schema.Struct({
 }).pipe(
   Schema.annotations({ description: "Payment Process Request", identifier: "PaymentProcessRequest" })
 )
-export type PaymentProcessRequest = typeof PaymentProcessRequest.Type
+type PaymentProcessRequest = typeof PaymentProcessRequest.Type
 
-export const PaymentRefundRequest = Schema.Struct({
+const PaymentRefundRequest = Schema.Struct({
   orderId: OrderId,
   sagaLogId: SagaLogId
 }).pipe(
   Schema.annotations({ description: "Payment Refund Request", identifier: "PaymentRefundRequest" })
 )
-export type PaymentRefundRequest = typeof PaymentRefundRequest.Type
+type PaymentRefundRequest = typeof PaymentRefundRequest.Type
 
-export class PaymentHttpApiGroup extends HttpApiGroup.make("payment")
+class PaymentHttpApiGroup extends HttpApiGroup.make("payment")
   .add(
     HttpApiEndpoint.post("process", "/process")
       .addSuccess(Schema.Struct({}))
@@ -96,10 +96,14 @@ export class PaymentHttpApiGroup extends HttpApiGroup.make("payment")
   .prefix("/payment")
 {}
 
-export const Api = HttpApi.make("api")
+const Api = HttpApi.make("api")
   .add(PaymentHttpApiGroup)
+  .annotate(OpenApi.Description, "Manage Payment API")
+  .annotate(OpenApi.Summary, "Manage Payment API")
+  .annotate(OpenApi.Title, "Payment API")
+  .prefix("/api/v1")
 
-export const PaymentHttpApiLive = HttpApiBuilder.group(
+const PaymentHttpApiLive = HttpApiBuilder.group(
   Api,
   "payment",
   (handlers) => {
@@ -198,7 +202,7 @@ export const PaymentHttpApiLive = HttpApiBuilder.group(
             },
             targetService: "inventory",
             targetEndpoint: "/inventories/update-inventory",
-            published: false
+            isPublished: false
           })
 
           await outboxEntry.save()
@@ -279,7 +283,7 @@ export const PaymentHttpApiLive = HttpApiBuilder.group(
   }
 )
 
-export const ApiLive = HttpApiBuilder.api(Api)
+const ApiLive = HttpApiBuilder.api(Api)
   .pipe(Layer.provide(PaymentHttpApiLive))
 
 const gracefulShutdown = <A, E, R>(layer: Layer.Layer<A, E, R>) =>
