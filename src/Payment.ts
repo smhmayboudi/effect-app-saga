@@ -17,7 +17,7 @@ import { CustomerId } from "./Customer.js"
 import { IdempotencyKey } from "./IdempotencyKey.js"
 import { OrderId } from "./Order.js"
 import { EventId, Outbox } from "./Outbox.js"
-import { SagaLog, SagaLogId } from "./SagaLog.js"
+import { SagaLog, SagaLogId, SagaLogRepository } from "./SagaLog.js"
 
 const PaymentId = Schema.UUID.pipe(
   Schema.brand("PaymentId"),
@@ -106,128 +106,173 @@ const Api = HttpApi.make("api")
 const PaymentHttpApiLive = HttpApiBuilder.group(
   Api,
   "payment",
-  (handlers) => {
-    return handlers.handle(
-      "process",
-      ({ headers: { "idempotency-key": idempotencyKey }, payload: { amount, customerId, orderId, sagaLogId } }) =>
-        Effect.gen(function*() {
-          yield* Console.log(
-            `[Payment Service] Payment start ${{ idempotencyKey, amount, customerId, orderId, sagaLogId }}`
-          )
-          // Check if payment already processed
-          const existingPayment = await Payment.findOne({ idempotencyKey })
-          if (existingPayment) {
-            yield* Console.log(`[Payment Service] Payment already processed with key: ${idempotencyKey}`)
-            return {
-              data: existingPayment,
-              message: "Payment already processed",
-              success: true
+  (handlers) =>
+    Effect.gen(function*() {
+      const sagaLogRepository = yield* SagaLogRepository
+
+      return handlers.handle(
+        "process",
+        ({ headers: { "idempotency-key": idempotencyKey }, payload: { amount, customerId, orderId, sagaLogId } }) =>
+          Effect.gen(function*() {
+            yield* Console.log(
+              `[Payment Service] Payment start ${{ idempotencyKey, amount, customerId, orderId, sagaLogId }}`
+            )
+            // Check if payment already processed
+            const existingPayment = await Payment.findOne({ idempotencyKey })
+            if (existingPayment) {
+              yield* Console.log(`[Payment Service] Payment already processed with key: ${idempotencyKey}`)
+              return {
+                data: existingPayment,
+                message: "Payment already processed",
+                success: true
+              }
             }
-          }
 
-          // Get saga log to track progress
-          let sagaLog = await SagaLog.findOne({ sagaLogId })
+            // Get saga log to track progress
+            const sagaLog = yield* sagaLogRepository.findOne({ sagaLogId })
 
-          if (!sagaLog) {
-            console.error(`[Payment Service] SagaLog not found for sagaLogId: ${sagaLogId}`)
-            // throw new Error("SagaLog not found")
-            return {
-              message: "SagaLog not found",
-              success: false
+            if (!sagaLog) {
+              console.error(`[Payment Service] SagaLog not found for sagaLogId: ${sagaLogId}`)
+              // throw new Error("SagaLog not found")
+              return {
+                message: "SagaLog not found",
+                success: false
+              }
             }
-          }
 
-          // Execute payment and outbox write without transaction for now
-          // try {
-          // Re-fetch sagaLog to ensure we have the latest version
-          sagaLog = await SagaLog.findOne({ sagaLogId })
+            // Execute payment and outbox write without transaction for now
+            // try {
+            // Re-fetch sagaLog to ensure we have the latest version
+            // sagaLog = await SagaLog.findOne({ sagaLogId })
 
-          if (!sagaLog) {
-            // throw new Error("SagaLog not found")
-            return {
-              message: "SagaLog not found",
-              success: false
-            }
-          }
+            // if (!sagaLog) {
+            //   // throw new Error("SagaLog not found")
+            //   return {
+            //     message: "SagaLog not found",
+            //     success: false
+            //   }
+            // }
 
-          // Simulate payment processing - randomly succeed or fail for demo
-          const shouldFail = Math.random() < 0.1 // 10% failure rate for demo
+            // Simulate payment processing - randomly succeed or fail for demo
+            const shouldFail = Math.random() < 0.1 // 10% failure rate for demo
 
-          const status = shouldFail ? "FAILED" : "PROCESSED"
+            const status = shouldFail ? "FAILED" : "PROCESSED"
 
-          const payment = new Payment({
-            paymentId: PaymentId.make(uuidv7()),
-            idempotencyKey,
-            orderId,
-            customerId,
-            amount,
-            sagaLogId,
-            status
-          })
+            const payment = new Payment({
+              paymentId: PaymentId.make(uuidv7()),
+              idempotencyKey,
+              orderId,
+              customerId,
+              amount,
+              sagaLogId,
+              status
+            })
 
-          await payment.save()
-
-          // Update saga log
-          const paymentStep = sagaLog.steps.find((s) => s.stepName === "PROCESS_PAYMENT")
-          paymentStep.status = "IN_PROGRESS"
-          paymentStep.timestamp = new Date()
-          await sagaLog.save()
-
-          if (shouldFail) {
-            yield* Console.log(`[Payment Service] Payment failed`)
+            await payment.save()
 
             // Update saga log
-            paymentStep.status = "FAILED"
-            paymentStep.error = "Payment declined"
+            const paymentStep = sagaLog.steps.find((s) => s.stepName === "PROCESS_PAYMENT")
+            paymentStep.status = "IN_PROGRESS"
+            paymentStep.timestamp = new Date()
             await sagaLog.save()
 
-            throw new Error("Payment declined")
-          }
+            if (shouldFail) {
+              yield* Console.log(`[Payment Service] Payment failed`)
 
-          yield* Console.log(`[Payment Service] Payment processed`)
+              // Update saga log
+              paymentStep.status = "FAILED"
+              paymentStep.error = "Payment declined"
+              await sagaLog.save()
 
-          // Update saga log
-          paymentStep.status = "COMPLETED"
-          await sagaLog.save()
+              throw new Error("Payment declined")
+            }
 
-          // Write inventory event to Outbox
-          yield* Console.log(`[Payment Service] Writing inventory event to Outbox`)
+            yield* Console.log(`[Payment Service] Payment processed`)
 
-          const inventoryEventId = EventId.make(uuidv7())
-          const outboxEntry = new Outbox({
-            eventId: inventoryEventId,
-            aggregateId: orderId,
-            eventType: "PaymentProcessed",
-            payload: {
-              orderId,
-              sagaLogId,
-              productId: sagaLog.productId || "unknown",
-              quantity: sagaLog.quantity || 1
-            },
-            targetService: "inventory",
-            targetEndpoint: "/inventories/update-inventory",
-            isPublished: false
+            // Update saga log
+            paymentStep.status = "COMPLETED"
+            await sagaLog.save()
+
+            // Write inventory event to Outbox
+            yield* Console.log(`[Payment Service] Writing inventory event to Outbox`)
+
+            const inventoryEventId = EventId.make(uuidv7())
+            const outboxEntry = new Outbox({
+              eventId: inventoryEventId,
+              aggregateId: orderId,
+              eventType: "PaymentProcessed",
+              payload: {
+                orderId,
+                sagaLogId,
+                productId: sagaLog.productId || "unknown",
+                quantity: sagaLog.quantity || 1
+              },
+              targetService: "inventory",
+              targetEndpoint: "/inventories/update-inventory",
+              isPublished: false
+            })
+
+            await outboxEntry.save()
+            yield* Console.log(`[Payment Service] Inventory event written to Outbox: ${inventoryEventId}`)
+
+            return { outboxEntry, payment }
+            // } catch (innerError) {
+            //   throw innerError
+            // }
+
+            // return {
+            //   message: "Payment processed - inventory event queued",
+            //   success: true
+            // }
           })
+      ).handle(
+        "refund",
+        ({ headers: { "idempotency-key": idempotencyKey }, payload: { orderId, sagaLogId } }) =>
+          Effect.gen(function*() {
+            yield* Console.log(`[Payment Service] Payment refund ${{ idempotencyKey, orderId, sagaLogId }}`)
+            const payment = await Payment.findOne({ orderId, sagaLogId })
 
-          await outboxEntry.save()
-          yield* Console.log(`[Payment Service] Inventory event written to Outbox: ${inventoryEventId}`)
+            if (!payment) {
+              // throw new Error("Payment not found")
+              return {
+                message: "Payment not found",
+                success: false
+              }
+            }
 
-          return { outboxEntry, payment }
-          // } catch (innerError) {
-          //   throw innerError
-          // }
+            // Mark as already refunded if compensation key matches
+            if (payment.compensationKey === idempotencyKey) {
+              yield* Console.log(`[Payment Service] Payment already refunded with key: ${idempotencyKey}`)
+              return res.status(200).json({
+                data: payment,
+                message: "Payment already refunded",
+                success: true
+              })
+            }
 
-          // return {
-          //   message: "Payment processed - inventory event queued",
-          //   success: true
-          // }
-        })
-    ).handle(
-      "refund",
-      ({ headers: { "idempotency-key": idempotencyKey }, payload: { orderId, sagaLogId } }) =>
+            const updatedPayment = await Payment.findOneAndUpdate(
+              { _id: payment._id },
+              {
+                status: "REFUNDED",
+                compensationKey: idempotencyKey
+              },
+              { new: true }
+            )
+
+            yield* Console.log(`[Payment Service] Payment refunded: ${orderId}`)
+
+            return {
+              data: updatedPayment,
+              message: "Payment refunded successfully",
+              success: true
+            }
+          })
+      ).handle("get", ({ path: { paymentId } }) =>
         Effect.gen(function*() {
-          yield* Console.log(`[Payment Service] Payment refund ${{ idempotencyKey, orderId, sagaLogId }}`)
-          const payment = await Payment.findOne({ orderId, sagaLogId })
+          yield* Console.log(
+            `[Payment Service] Payment get ${{ paymentId }}`
+          )
+          const payment = await Payment.findOne({ paymentId })
 
           if (!payment) {
             // throw new Error("Payment not found")
@@ -237,54 +282,12 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
             }
           }
 
-          // Mark as already refunded if compensation key matches
-          if (payment.compensationKey === idempotencyKey) {
-            yield* Console.log(`[Payment Service] Payment already refunded with key: ${idempotencyKey}`)
-            return res.status(200).json({
-              data: payment,
-              message: "Payment already refunded",
-              success: true
-            })
-          }
-
-          const updatedPayment = await Payment.findOneAndUpdate(
-            { _id: payment._id },
-            {
-              status: "REFUNDED",
-              compensationKey: idempotencyKey
-            },
-            { new: true }
-          )
-
-          yield* Console.log(`[Payment Service] Payment refunded: ${orderId}`)
-
           return {
-            data: updatedPayment,
-            message: "Payment refunded successfully",
+            data: payment,
             success: true
           }
-        })
-    ).handle("get", ({ path: { paymentId } }) =>
-      Effect.gen(function*() {
-        yield* Console.log(
-          `[Payment Service] Payment get ${{ paymentId }}`
-        )
-        const payment = await Payment.findOne({ paymentId })
-
-        if (!payment) {
-          // throw new Error("Payment not found")
-          return {
-            message: "Payment not found",
-            success: false
-          }
-        }
-
-        return {
-          data: payment,
-          success: true
-        }
-      }))
-  }
+        }))
+    })
 )
 
 const ApiLive = HttpApiBuilder.api(Api)

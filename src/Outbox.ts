@@ -56,8 +56,8 @@ class OutboxRepository extends Context.Tag("@context/OutboxRepository")<
   {
     readonly findUnpublished: (options: {
       batchSize: number
-    }) => Effect.Effect<Array<Outbox>, Error>
-    readonly save: (data: Outbox) => Effect.Effect<Outbox, Error>
+    }) => Effect.Effect<Array<Outbox>>
+    readonly save: (data: Outbox) => Effect.Effect<Outbox>
   }
 >() {}
 

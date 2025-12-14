@@ -17,7 +17,7 @@ import { IdempotencyKey } from "./IdempotencyKey.js"
 import { OrderId } from "./Order.js"
 import { Outbox } from "./Outbox.js"
 import { ProductId } from "./Product.js"
-import { SagaLog, SagaLogId } from "./SagaLog.js"
+import { SagaLog, SagaLogId, SagaLogRepository } from "./SagaLog.js"
 
 const InventorySchemaStruct = Schema.Struct({
   productId: ProductId,
@@ -113,119 +113,178 @@ const Api = HttpApi.make("api")
 const InventoryHttpApiLive = HttpApiBuilder.group(
   Api,
   "inventory",
-  (handlers) => {
-    return handlers.handle(
-      "update",
-      ({ headers: { "idempotency-key": idempotencyKey }, payload: { orderId, productId, quantity, sagaLogId } }) =>
-        Effect.gen(function*() {
-          yield* Console.log(
-            `[Inventory Service] Inventory update ${{ idempotencyKey, orderId, productId, quantity, sagaLogId }}`
-          )
-          const existingInventoryLog = await Inventory.findOne({
-            lastIdempotencyKey: idempotencyKey
-          })
-          if (existingInventoryLog) {
-            yield* Console.log(`[Inventory Service] Inventory already updated with key: ${idempotencyKey}`)
-            return {
-              data: existingInventoryLog,
-              message: "Inventory already updated",
-              success: true
-            }
-          }
+  (handlers) =>
+    Effect.gen(function*() {
+      const sagaLogRepository = yield* SagaLogRepository
 
-          // Get saga log to track progress
-          const sagaLog = await SagaLog.findOne({ sagaLogId })
-
-          // Execute inventory update without transaction
-          let inventory = await Inventory.findOne({ productId })
-          if (!inventory) {
-            // Initialize inventory with default stock of 100 units
-            inventory = new Inventory({
-              productId,
-              quantity: 100,
-              reservedQuantity: 0
+      return handlers.handle(
+        "update",
+        ({ headers: { "idempotency-key": idempotencyKey }, payload: { orderId, productId, quantity, sagaLogId } }) =>
+          Effect.gen(function*() {
+            yield* Console.log(
+              `[Inventory Service] Inventory update ${{ idempotencyKey, orderId, productId, quantity, sagaLogId }}`
+            )
+            const existingInventoryLog = await Inventory.findOne({
+              lastIdempotencyKey: idempotencyKey
             })
-            await inventory.save()
-            yield* Console.log(`[Inventory Service] Initialized inventory for product ${productId} with 100 units`)
-          }
+            if (existingInventoryLog) {
+              yield* Console.log(`[Inventory Service] Inventory already updated with key: ${idempotencyKey}`)
+              return {
+                data: existingInventoryLog,
+                message: "Inventory already updated",
+                success: true
+              }
+            }
 
-          // Update saga log
-          const inventoryStep = sagaLog.steps.find((s) => s.stepName === "UPDATE_INVENTORY")
-          inventoryStep.status = "IN_PROGRESS"
-          inventoryStep.timestamp = new Date()
-          await sagaLog.save()
+            // Get saga log to track progress
+            const sagaLog = yield* sagaLogRepository.findOne({ sagaLogId })
 
-          // Check if there's enough inventory
-          if (inventory.quantity - inventory.reservedQuantity < quantity) {
-            yield* Console.log(`[Inventory Service] Insufficient inventory for product: ${productId}`)
+            // Execute inventory update without transaction
+            let inventory = await Inventory.findOne({ productId })
+            if (!inventory) {
+              // Initialize inventory with default stock of 100 units
+              inventory = new Inventory({
+                productId,
+                quantity: 100,
+                reservedQuantity: 0
+              })
+              await inventory.save()
+              yield* Console.log(`[Inventory Service] Initialized inventory for product ${productId} with 100 units`)
+            }
 
             // Update saga log
-            inventoryStep.status = "FAILED"
-            inventoryStep.error = "Insufficient inventory"
+            const inventoryStep = sagaLog.steps.find((s) => s.stepName === "UPDATE_INVENTORY")
+            inventoryStep.status = "IN_PROGRESS"
+            inventoryStep.timestamp = new Date()
             await sagaLog.save()
 
-            // throw new Error("Insufficient inventory")
-            return {
-              error: "Insufficient inventory",
-              message: "Error updating inventory",
-              success: false
+            // Check if there's enough inventory
+            if (inventory.quantity - inventory.reservedQuantity < quantity) {
+              yield* Console.log(`[Inventory Service] Insufficient inventory for product: ${productId}`)
+
+              // Update saga log
+              inventoryStep.status = "FAILED"
+              inventoryStep.error = "Insufficient inventory"
+              await sagaLog.save()
+
+              // throw new Error("Insufficient inventory")
+              return {
+                error: "Insufficient inventory",
+                message: "Error updating inventory",
+                success: false
+              }
             }
-          }
 
-          // Update inventory - reduce available quantity and increase reserved
-          inventory.quantity -= quantity
-          inventory.reservedQuantity += quantity
-          inventory.lastIdempotencyKey = idempotencyKey
-          await inventory.save()
+            // Update inventory - reduce available quantity and increase reserved
+            inventory.quantity -= quantity
+            inventory.reservedQuantity += quantity
+            inventory.lastIdempotencyKey = idempotencyKey
+            await inventory.save()
 
-          yield* Console.log(`[Inventory Service] Inventory updated for product: ${productId}`)
+            yield* Console.log(`[Inventory Service] Inventory updated for product: ${productId}`)
 
-          // Update saga log
-          inventoryStep.status = "COMPLETED"
-          await sagaLog.save()
+            // Update saga log
+            inventoryStep.status = "COMPLETED"
+            await sagaLog.save()
 
-          // Write shipping event to Outbox
-          yield* Console.log(`[Inventory Service] Writing shipping event to Outbox`)
+            // Write shipping event to Outbox
+            yield* Console.log(`[Inventory Service] Writing shipping event to Outbox`)
 
-          const shippingEventId = uuidv7()
-          const outboxEntry = new Outbox({
-            eventId: shippingEventId,
-            aggregateId: OrderId.make(orderId.toString()),
-            eventType: "InventoryUpdated",
-            payload: {
-              customerId: sagaLog.customerId || "unknown",
-              orderId,
-              sagaLogId
-            },
-            targetService: "shipping",
-            targetEndpoint: "/shipments/deliver-order",
-            isPublished: false
+            const shippingEventId = uuidv7()
+            const outboxEntry = new Outbox({
+              eventId: shippingEventId,
+              aggregateId: OrderId.make(orderId.toString()),
+              eventType: "InventoryUpdated",
+              payload: {
+                customerId: sagaLog.customerId || "unknown",
+                orderId,
+                sagaLogId
+              },
+              targetService: "shipping",
+              targetEndpoint: "/shipments/deliver-order",
+              isPublished: false
+            })
+
+            await outboxEntry.save()
+            yield* Console.log(`[Inventory Service] Shipping event written to Outbox: ${shippingEventId}`)
+            yield* Console.log(`[Inventory Service] Saga will be completed when Shipping processes event\n`)
+
+            return { inventory, outboxEntry }
           })
+      ).handle(
+        "compensate",
+        ({ headers: { "idempotency-key": idempotencyKey }, payload: { orderId, productId, quantity, sagaLogId } }) =>
+          Effect.gen(function*() {
+            yield* Console.log(
+              `[Inventory Service] Inventory compensate ${{ idempotencyKey, orderId, productId, quantity, sagaLogId }}`
+            )
+            // Check if already compensated
+            const inventoryC = await Inventory.findOne({ compensationKey: idempotencyKey, orderId })
+            if (inventoryC) {
+              yield* Console.log(`[Inventory Service] Inventory already compensated with key: ${idempotencyKey}`)
+              return {
+                message: "Inventory already compensated",
+                success: true
+              }
+            }
 
-          await outboxEntry.save()
-          yield* Console.log(`[Inventory Service] Shipping event written to Outbox: ${shippingEventId}`)
-          yield* Console.log(`[Inventory Service] Saga will be completed when Shipping processes event\n`)
+            const inventory = await Inventory.findOne({ productId })
+            if (!inventory) {
+              // throw new Error("Inventory not found")
+              return {
+                message: "Inventory not found",
+                success: false
+              }
+            }
 
-          return { inventory, outboxEntry }
-        })
-    ).handle(
-      "compensate",
-      ({ headers: { "idempotency-key": idempotencyKey }, payload: { orderId, productId, quantity, sagaLogId } }) =>
-        Effect.gen(function*() {
-          yield* Console.log(
-            `[Inventory Service] Inventory compensate ${{ idempotencyKey, orderId, productId, quantity, sagaLogId }}`
-          )
-          // Check if already compensated
-          const inventoryC = await Inventory.findOne({ compensationKey: idempotencyKey, orderId })
-          if (inventoryC) {
-            yield* Console.log(`[Inventory Service] Inventory already compensated with key: ${idempotencyKey}`)
+            // Restore inventory
+            inventory.quantity += quantity
+            inventory.reservedQuantity = Math.max(0, inventory.reservedQuantity - quantity)
+            inventory.compensationKey = idempotencyKey
+            await inventory.save()
+
+            yield* Console.log(`[Inventory Service] Inventory compensated for product: ${productId}`)
+
             return {
-              message: "Inventory already compensated",
+              data: inventory,
+              message: "Inventory compensated successfully",
               success: true
             }
-          }
+          })
+      ).handle(
+        "initialize",
+        ({ payload: { productId, quantity } }) =>
+          Effect.gen(function*() {
+            yield* Console.log(
+              `[Inventory Service] Inventory initialize ${{ productId, quantity }}`
+            )
+            let inventory = await Inventory.findOne({ productId })
 
+            if (!inventory) {
+              inventory = new Inventory({
+                productId,
+                quantity,
+                reservedQuantity: 0
+              })
+            } else {
+              inventory.quantity += quantity
+            }
+
+            await inventory.save()
+
+            return {
+              data: inventory,
+              message: "Inventory initialized",
+              success: true
+            }
+          })
+      ).handle("get", ({ path: { productId } }) =>
+        Effect.gen(function*() {
+          yield* Console.log(
+            `[Inventory Service] Inventory initialize ${{ productId }}`
+          )
           const inventory = await Inventory.findOne({ productId })
+
           if (!inventory) {
             // throw new Error("Inventory not found")
             return {
@@ -234,69 +293,13 @@ const InventoryHttpApiLive = HttpApiBuilder.group(
             }
           }
 
-          // Restore inventory
-          inventory.quantity += quantity
-          inventory.reservedQuantity = Math.max(0, inventory.reservedQuantity - quantity)
-          inventory.compensationKey = idempotencyKey
-          await inventory.save()
-
-          yield* Console.log(`[Inventory Service] Inventory compensated for product: ${productId}`)
-
           return {
             data: inventory,
-            message: "Inventory compensated successfully",
+            message: "",
             success: true
           }
-        })
-    ).handle(
-      "initialize",
-      ({ payload: { productId, quantity } }) =>
-        Effect.gen(function*() {
-          yield* Console.log(
-            `[Inventory Service] Inventory initialize ${{ productId, quantity }}`
-          )
-          let inventory = await Inventory.findOne({ productId })
-
-          if (!inventory) {
-            inventory = new Inventory({
-              productId,
-              quantity,
-              reservedQuantity: 0
-            })
-          } else {
-            inventory.quantity += quantity
-          }
-
-          await inventory.save()
-
-          return {
-            data: inventory,
-            message: "Inventory initialized",
-            success: true
-          }
-        })
-    ).handle("get", ({ path: { productId } }) =>
-      Effect.gen(function*() {
-        yield* Console.log(
-          `[Inventory Service] Inventory initialize ${{ productId }}`
-        )
-        const inventory = await Inventory.findOne({ productId })
-
-        if (!inventory) {
-          // throw new Error("Inventory not found")
-          return {
-            message: "Inventory not found",
-            success: false
-          }
-        }
-
-        return {
-          data: inventory,
-          message: "",
-          success: true
-        }
-      }))
-  }
+        }))
+    })
 )
 
 const ApiLive = HttpApiBuilder.api(Api)

@@ -17,7 +17,7 @@ import { CustomerId } from "./Customer.js"
 import { IdempotencyKey } from "./IdempotencyKey.js"
 import { EventId, Outbox } from "./Outbox.js"
 import { ProductId } from "./Product.js"
-import { SagaLog, SagaLogId } from "./SagaLog.js"
+import { SagaLog, SagaLogId, SagaLogRepository } from "./SagaLog.js"
 
 export const OrderId = Schema.UUID.pipe(
   Schema.brand("OrderId"),
@@ -105,7 +105,9 @@ const Api = HttpApi.make("api")
 const OrderHttpApiLive = HttpApiBuilder.group(
   Api,
   "order",
-  (handlers) => {
+  (handlers) => Effect.gen(function*() {
+    const sagaLogRepository = yield* SagaLogRepository
+
     return handlers.handle(
       "start",
       ({ headers: { "idempotency-key": idempotencyKey }, payload: { customerId, productId, quantity, totalPrice } }) =>
@@ -113,8 +115,8 @@ const OrderHttpApiLive = HttpApiBuilder.group(
           yield* Console.log(
             `[Order Service] Order start ${{ idempotencyKey, customerId, productId, quantity, totalPrice }}`
           )
-          // Check if this saga was already started with this idempotency key
-          const existingSaga = await SagaLog.findOne({ idempotencyKey })
+          // Check if this saga was already started with this idempotency key })
+          const existingSaga = yield* sagaLogRepository.findOne({ idempotencyKey })
           if (existingSaga) {
             yield* Console.log(`[Order Service] Saga already processed with key: ${idempotencyKey}`)
             return {
@@ -132,46 +134,47 @@ const OrderHttpApiLive = HttpApiBuilder.group(
           const { orderId, paymentEventId } = await withTransaction(async (session) => {
             // Initialize Saga Log with idempotency key
             const sagaLog = new SagaLog({
-              sagaLogId,
-              idempotencyKey,
-              status: "STARTED",
               customerId,
+              idempotencyKey,
               productId,
               quantity,
-              totalPrice,
+              sagaLogId,
+              status: "STARTED",
               steps: [
                 {
+                  compensationStatus: "PENDING",
+                  error: null,
+                  status: "PENDING",
                   stepName: "CREATE_ORDER",
-                  status: "PENDING",
-                  timestamp: null,
-                  error: null,
-                  compensationStatus: "PENDING"
+                  timestamp: null
                 },
                 {
+                  compensationStatus: "PENDING",
+                  error: null,
+                  status: "PENDING",
                   stepName: "PROCESS_PAYMENT",
-                  status: "PENDING",
-                  timestamp: null,
-                  error: null,
-                  compensationStatus: "PENDING"
+                  timestamp: null
                 },
                 {
+                  compensationStatus: "PENDING",
+                  error: null,
+                  status: "PENDING",
                   stepName: "UPDATE_INVENTORY",
-                  status: "PENDING",
-                  timestamp: null,
-                  error: null,
-                  compensationStatus: "PENDING"
+                  timestamp: null
                 },
                 {
-                  stepName: "DELIVER_ORDER",
-                  status: "PENDING",
-                  timestamp: null,
+                  compensationStatus: "PENDING",
                   error: null,
-                  compensationStatus: "PENDING"
+                  status: "PENDING",
+                  stepName: "DELIVER_ORDER",
+                  timestamp: null
                 }
-              ]
+              ],
+              totalPrice
             })
 
-            await sagaLog.save({ session })
+            yield* sagaLogRepository.save(sagaLog)
+            // await sagaLog.save({ session })
 
             // Step 1: Create Order
             yield* Console.log(`[Order Service] Executing Step 1: CREATE_ORDER`)
@@ -281,7 +284,7 @@ const OrderHttpApiLive = HttpApiBuilder.group(
           success: true
         }
       }))
-  }
+  })
 )
 
 const ApiLive = HttpApiBuilder.api(Api)

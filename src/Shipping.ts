@@ -16,7 +16,7 @@ import { v7 as uuidv7 } from "uuid"
 import { CustomerId } from "./Customer.js"
 import { IdempotencyKey } from "./IdempotencyKey.js"
 import { OrderId } from "./Order.js"
-import { SagaLog, SagaLogId } from "./SagaLog.js"
+import { SagaLog, SagaLogId, SagaLogRepository } from "./SagaLog.js"
 
 const ShippingId = Schema.UUID.pipe(
   Schema.brand("ShippingId"),
@@ -33,7 +33,7 @@ const ShippingSchema = Schema.Struct({
   status: Schema.optionalWith(
     Schema.Literal("PENDING", "SHIPPED", "DELIVERED", "CANCELLED"),
     { default: () => "PENDING" }
-  ).annotations({ description: "Status" }),
+  ).annotations({ description: "Status" })
   // createdAt: Schema.optionalWith(Schema.Date, { default: () => new Date() }).annotations({ description: "Created At" }),
   // updatedAt: Schema.Date.annotations({ description: "Updated At" }),
   // deletedAt: Schema.NullOr(Schema.Date).annotations({ description: "Delete At" })
@@ -103,105 +103,131 @@ const Api = HttpApi.make("api")
 const ShippingHttpApiLive = HttpApiBuilder.group(
   Api,
   "shipping",
-  (handlers) => {
-    return handlers.handle(
-      "deliver",
-      ({ headers: { "idempotency-key": idempotencyKey }, payload: { customerId, orderId, sagaLogId } }) =>
-        Effect.gen(function*() {
-          yield* Console.log(
-            `[Shipping Service] Shipping deliver ${{ idempotencyKey, customerId, orderId, sagaLogId }}`
-          )
-          // Check if shipping already created
-          const existingShipping = await Shipping.findOne({ idempotencyKey })
-          if (existingShipping) {
-            yield* Console.log(`[Shipping Service] Shipping already created with key: ${idempotencyKey}`)
+  (handlers) =>
+    Effect.gen(function*() {
+      const sagaLogRepository = yield* SagaLogRepository
+
+      return handlers.handle(
+        "deliver",
+        ({ headers: { "idempotency-key": idempotencyKey }, payload: { customerId, orderId, sagaLogId } }) =>
+          Effect.gen(function*() {
+            yield* Console.log(
+              `[Shipping Service] Shipping deliver ${{ idempotencyKey, customerId, orderId, sagaLogId }}`
+            )
+            // Check if shipping already created
+            const existingShipping = await Shipping.findOne({ idempotencyKey })
+            if (existingShipping) {
+              yield* Console.log(`[Shipping Service] Shipping already created with key: ${idempotencyKey}`)
+              return {
+                data: existingShipping,
+                message: "Shipping already created",
+                sagaLogId,
+                success: true
+              }
+            }
+
+            // Get saga log to track progress
+            const sagaLog = yield* sagaLogRepository.findOne({ sagaLogId })
+
+            if (!sagaLog) {
+              // throw new Error("SagaLog not found")
+              return {
+                message: "SagaLog not found",
+                success: false
+              }
+            }
+
+            // Execute shipping creation and saga completion without transaction
+            // try {
+            const shipping = new Shipping({
+              shippingId: ShippingId.make(uuidv7()),
+              idempotencyKey,
+              orderId,
+              customerId,
+              status: "SHIPPED",
+              sagaLogId
+            })
+
+            await shipping.save()
+            yield* Console.log(`[Shipping Service] Shipping created: ${orderId}`)
+
+            // Update saga log
+            const shippingStep = sagaLog.steps.find((s) => s.stepName === "DELIVER_ORDER")
+            if (shippingStep) {
+              shippingStep.status = "IN_PROGRESS"
+              shippingStep.timestamp = new Date()
+              await sagaLog.save()
+
+              yield* Console.log(`[Shipping Service] Order delivered: ${orderId}`)
+
+              // Mark saga as completed
+              shippingStep.status = "COMPLETED"
+              sagaLog.status = "COMPLETED"
+              await sagaLog.save()
+
+              yield* Console.log(`[Shipping Service] Saga COMPLETED: ${sagaLogId}\n`)
+            } else {
+              console.error(`[Shipping Service] DELIVER_ORDER step not found in saga`)
+            }
+
+            return shipping
+            // } catch (innerError) {
+            //   throw innerError
+            // }
+
+            // return {
+            //   message: "Order shipped successfully and saga completed",
+            //   sagaLogId,
+            //   success: true
+            // }
+          })
+      ).handle(
+        "cancel",
+        ({ headers: { "idempotency-key": idempotencyKey }, payload: { orderId, sagaLogId } }) =>
+          Effect.gen(function*() {
+            yield* Console.log(`[Shipping Service] Shipping cancel ${{ idempotencyKey, orderId, sagaLogId }}`)
+            // Check if already cancelled
+            if (await Shipping.findOne({ compensationKey: idempotencyKey, orderId })) {
+              console.log(`[Shipping Service] Shipping already cancelled with key: ${idempotencyKey}`)
+              return {
+                success: true,
+                message: "Shipping already cancelled"
+              }
+            }
+
+            const shipment = await Shipping.findOneAndUpdate(
+              { orderId, sagaLogId },
+              {
+                status: "CANCELLED",
+                compensationKey: idempotencyKey
+              },
+              { new: true }
+            )
+
+            if (!shipment) {
+              // throw new Error("Shipping not found")
+              return {
+                message: "Shipping not found",
+                success: false
+              }
+            }
+
+            yield* Console.log(`[Shipping Service] Shipping cancelled: ${orderId}`)
+
             return {
-              data: existingShipping,
-              message: "Shipping already created",
-              sagaLogId,
+              data: shipment,
+              message: "Shipping cancelled successfully",
               success: true
             }
-          }
-
-          // Get saga log to track progress
-          const sagaLog = await SagaLog.findOne({ sagaLogId })
-
-          if (!sagaLog) {
-            // throw new Error("SagaLog not found")
-            return {
-              message: "SagaLog not found",
-              success: false
-            }
-          }
-
-          // Execute shipping creation and saga completion without transaction
-          // try {
-          const shipping = new Shipping({
-            shippingId: ShippingId.make(uuidv7()),
-            idempotencyKey,
-            orderId,
-            customerId,
-            status: "SHIPPED",
-            sagaLogId
           })
-
-          await shipping.save()
-          yield* Console.log(`[Shipping Service] Shipping created: ${orderId}`)
-
-          // Update saga log
-          const shippingStep = sagaLog.steps.find((s) => s.stepName === "DELIVER_ORDER")
-          if (shippingStep) {
-            shippingStep.status = "IN_PROGRESS"
-            shippingStep.timestamp = new Date()
-            await sagaLog.save()
-
-            yield* Console.log(`[Shipping Service] Order delivered: ${orderId}`)
-
-            // Mark saga as completed
-            shippingStep.status = "COMPLETED"
-            sagaLog.status = "COMPLETED"
-            await sagaLog.save()
-
-            yield* Console.log(`[Shipping Service] Saga COMPLETED: ${sagaLogId}\n`)
-          } else {
-            console.error(`[Shipping Service] DELIVER_ORDER step not found in saga`)
-          }
-
-          return shipping
-          // } catch (innerError) {
-          //   throw innerError
-          // }
-
-          // return {
-          //   message: "Order shipped successfully and saga completed",
-          //   sagaLogId,
-          //   success: true
-          // }
-        })
-    ).handle(
-      "cancel",
-      ({ headers: { "idempotency-key": idempotencyKey }, payload: { orderId, sagaLogId } }) =>
+      ).handle("get", ({ path: { shippingId } }) =>
         Effect.gen(function*() {
-          yield* Console.log(`[Shipping Service] Shipping cancel ${{ idempotencyKey, orderId, sagaLogId }}`)
-          // Check if already cancelled
-          if (await Shipping.findOne({ compensationKey: idempotencyKey, orderId })) {
-            console.log(`[Shipping Service] Shipping already cancelled with key: ${idempotencyKey}`)
-            return {
-              success: true,
-              message: "Shipping already cancelled"
-            }
-          }
-
-          const shipment = await Shipping.findOneAndUpdate(
-            { orderId, sagaLogId },
-            {
-              status: "CANCELLED",
-              compensationKey: idempotencyKey
-            },
-            { new: true }
+          yield* Console.log(
+            `[Shipping Service] Shipping get ${{ shippingId }}`
           )
+          const shipping = await Shipping.findOne({ shippingId })
 
-          if (!shipment) {
+          if (!shipping) {
             // throw new Error("Shipping not found")
             return {
               message: "Shipping not found",
@@ -209,35 +235,12 @@ const ShippingHttpApiLive = HttpApiBuilder.group(
             }
           }
 
-          yield* Console.log(`[Shipping Service] Shipping cancelled: ${orderId}`)
-
           return {
-            data: shipment,
-            message: "Shipping cancelled successfully",
+            data: shipping,
             success: true
           }
-        })
-    ).handle("get", ({ path: { shippingId } }) =>
-      Effect.gen(function*() {
-        yield* Console.log(
-          `[Shipping Service] Shipping get ${{ shippingId }}`
-        )
-        const shipping = await Shipping.findOne({ shippingId })
-
-        if (!shipping) {
-          // throw new Error("Shipping not found")
-          return {
-            message: "Shipping not found",
-            success: false
-          }
-        }
-
-        return {
-          data: shipping,
-          success: true
-        }
-      }))
-  }
+        }))
+    })
 )
 
 const ApiLive = HttpApiBuilder.api(Api)
