@@ -17,7 +17,7 @@ import { IdempotencyKey } from "./IdempotencyKey.js"
 import { OrderId } from "./Order.js"
 import { Outbox } from "./Outbox.js"
 import { ProductId } from "./Product.js"
-import { SagaLogId } from "./SagaLog.js"
+import { SagaLog, SagaLogId } from "./SagaLog.js"
 
 export const InventorySchemaStruct = Schema.Struct({
   productId: ProductId,
@@ -153,7 +153,7 @@ export const InventoryHttpApiLive = HttpApiBuilder.group(
 
           // Check if there's enough inventory
           if (inventory.quantity - inventory.reservedQuantity < quantity) {
-            console.log(`[Inventory Service] Insufficient inventory for product: ${productId}`)
+            yield* Console.log(`[Inventory Service] Insufficient inventory for product: ${productId}`)
 
             // Update saga log
             inventoryStep.status = "FAILED"

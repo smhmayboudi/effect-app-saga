@@ -29,4 +29,4 @@ export * as Program from "./Program.js"
 export * as SagaLog from "./SagaLog.js"
 
 
-export * as Shipment from "./Shipment.js"
+export * as Shipping from "./Shipping.js"

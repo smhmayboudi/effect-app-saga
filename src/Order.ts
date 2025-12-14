@@ -26,16 +26,16 @@ export const OrderId = Schema.UUID.pipe(
 export type OrderId = typeof OrderId.Type
 
 export const OrderSchema = Schema.Struct({
-  orderId: OrderId,
   customerId: CustomerId,
+  orderId: OrderId,
   productId: ProductId,
   quantity: Schema.Number.annotations({ description: "Quantity" }),
-  totalPrice: Schema.Number.annotations({ description: "Total Price" }),
+  sagaLogId: SagaLogId,
   status: Schema.optionalWith(
     Schema.Literal("PENDING", "CONFIRMED", "FAILED", "COMPENSATED"),
     { default: () => "PENDING" }
   ).annotations({ description: "Status" }),
-  sagaLogId: SagaLogId
+  totalPrice: Schema.Number.annotations({ description: "Total Price" })
   // createdAt: Schema.optionalWith(Schema.Date, { default: () => new Date() }).annotations({ description: "Created At" }),
   // updatedAt: Schema.Date.annotations({ description: "Updated At" }),
   // deletedAt: Schema.NullOr(Schema.Date).annotations({ description: "Delete At" })
@@ -116,7 +116,7 @@ export const OrderHttpApiLive = HttpApiBuilder.group(
             return {
               message: "Saga already initiated",
               orderId: existingSaga.orderId,
-              sagaId: existingSaga.sagaId,
+              sagaLogId: existingSaga.sagaLogId,
               success: true
             }
           }
@@ -314,7 +314,7 @@ HttpApiBuilder.serve(flow(
   Layer.provide(ApiLive),
   Layer.provide(Logger.minimumLogLevel(LogLevel.Debug)),
   HttpServer.withLogAddress,
-  Layer.provide(NodeHttpServer.layer(http.createServer, { port: 3003 })),
+  Layer.provide(NodeHttpServer.layer(http.createServer, { port: 3001 })),
   gracefulShutdown,
   Layer.launch,
   NodeRuntime.runMain

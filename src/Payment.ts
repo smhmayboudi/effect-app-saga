@@ -26,16 +26,16 @@ export const PaymentId = Schema.UUID.pipe(
 export type PaymentId = typeof PaymentId.Type
 
 export const PaymentSchema = Schema.Struct({
-  paymentId: PaymentId,
-  idempotencyKey: IdempotencyKey,
-  orderId: OrderId,
   amount: Schema.Number.annotations({ description: "Amount" }),
   customerId: CustomerId,
+  idempotencyKey: IdempotencyKey,
+  orderId: OrderId,
+  paymentId: PaymentId,
+  sagaLogId: SagaLogId,
   status: Schema.optionalWith(
     Schema.Literal("PENDING", "PROCESSED", "FAILED", "REFUNDED"),
     { default: () => "PENDING" }
-  ).annotations({ description: "Status" }),
-  sagaLogId: SagaLogId
+  ).annotations({ description: "Status" })
   // createdAt: Schema.optionalWith(Schema.Date, { default: () => new Date() }).annotations({ description: "Created At" }),
   // updatedAt: Schema.Date.annotations({ description: "Updated At" }),
   // deletedAt: Schema.NullOr(Schema.Date).annotations({ description: "Delete At" })
@@ -113,7 +113,7 @@ export const PaymentHttpApiLive = HttpApiBuilder.group(
           // Check if payment already processed
           const existingPayment = await Payment.findOne({ idempotencyKey })
           if (existingPayment) {
-            console.log(`[Payment Service] Payment already processed with key: ${idempotencyKey}`)
+            yield* Console.log(`[Payment Service] Payment already processed with key: ${idempotencyKey}`)
             return {
               data: existingPayment,
               message: "Payment already processed",
@@ -166,7 +166,7 @@ export const PaymentHttpApiLive = HttpApiBuilder.group(
           await sagaLog.save()
 
           if (shouldFail) {
-            console.log(`[Payment Service] Payment failed`)
+            yield* Console.log(`[Payment Service] Payment failed`)
 
             // Update saga log
             paymentStep.status = "FAILED"
@@ -176,14 +176,14 @@ export const PaymentHttpApiLive = HttpApiBuilder.group(
             throw new Error("Payment declined")
           }
 
-          console.log(`[Payment Service] Payment processed`)
+          yield* Console.log(`[Payment Service] Payment processed`)
 
           // Update saga log
           paymentStep.status = "COMPLETED"
           await sagaLog.save()
 
           // Write inventory event to Outbox
-          console.log(`[Payment Service] Writing inventory event to Outbox`)
+          yield* Console.log(`[Payment Service] Writing inventory event to Outbox`)
 
           const inventoryEventId = EventId.make(uuidv7())
           const outboxEntry = new Outbox({
@@ -202,7 +202,7 @@ export const PaymentHttpApiLive = HttpApiBuilder.group(
           })
 
           await outboxEntry.save()
-          console.log(`[Payment Service] Inventory event written to Outbox: ${inventoryEventId}`)
+          yield* Console.log(`[Payment Service] Inventory event written to Outbox: ${inventoryEventId}`)
 
           return { outboxEntry, payment }
           // } catch (innerError) {
@@ -219,7 +219,7 @@ export const PaymentHttpApiLive = HttpApiBuilder.group(
       ({ headers: { "idempotency-key": idempotencyKey }, payload: { orderId, sagaLogId } }) =>
         Effect.gen(function*() {
           yield* Console.log(`[Payment Service] Payment refund ${{ idempotencyKey, orderId, sagaLogId }}`)
-          const payment = await Payment.findOne({ orderId, sagaId })
+          const payment = await Payment.findOne({ orderId, sagaLogId })
 
           if (!payment) {
             // throw new Error("Payment not found")
@@ -231,7 +231,7 @@ export const PaymentHttpApiLive = HttpApiBuilder.group(
 
           // Mark as already refunded if compensation key matches
           if (payment.compensationKey === idempotencyKey) {
-            console.log(`[Payment Service] Payment already refunded with key: ${idempotencyKey}`)
+            yield* Console.log(`[Payment Service] Payment already refunded with key: ${idempotencyKey}`)
             return res.status(200).json({
               data: payment,
               message: "Payment already refunded",
@@ -313,7 +313,7 @@ HttpApiBuilder.serve(flow(
   Layer.provide(ApiLive),
   Layer.provide(Logger.minimumLogLevel(LogLevel.Debug)),
   HttpServer.withLogAddress,
-  Layer.provide(NodeHttpServer.layer(http.createServer, { port: 3003 })),
+  Layer.provide(NodeHttpServer.layer(http.createServer, { port: 3002 })),
   gracefulShutdown,
   Layer.launch,
   NodeRuntime.runMain
