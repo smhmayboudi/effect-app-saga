@@ -16,11 +16,11 @@ export const ShipmentSchema = Schema.Struct({
   orderId: OrderId,
   customerId: CustomerId,
   status: Schema.optionalWith(
-    Schema.Literal("PENDING", "SHIPPED", "DELIVERED", "CANCELLED").annotations({ description: "Status" }),
+    Schema.Literal("PENDING", "SHIPPED", "DELIVERED", "CANCELLED"),
     { default: () => "PENDING" }
-  ),
+  ).annotations({ description: "Status" }),
   sagaLogId: SagaLogId
-  // createdAt: Schema.optionalWith(Schema.Date.annotations({ description: "Created At" }), { default: () => new Date() }),
+  // createdAt: Schema.optionalWith(Schema.Date, { default: () => new Date() }).annotations({ description: "Created At" }),
   // updatedAt: Schema.Date.annotations({ description: "Updated At" }),
   // deletedAt: Schema.NullOr(Schema.Date).annotations({ description: "Delete At" })
 }).pipe(

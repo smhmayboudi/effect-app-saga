@@ -17,11 +17,11 @@ export const PaymentSchema = Schema.Struct({
   amount: Schema.Number.annotations({ description: "Amount" }),
   customerId: CustomerId,
   status: Schema.optionalWith(
-    Schema.Literal("PENDING", "PROCESSED", "FAILED", "REFUNDED").annotations({ description: "Status" }),
+    Schema.Literal("PENDING", "PROCESSED", "FAILED", "REFUNDED"),
     { default: () => "PENDING" }
-  ),
+  ).annotations({ description: "Status" }),
   sagaLogId: SagaLogId
-  // createdAt: Schema.optionalWith(Schema.Date.annotations({ description: "Created At" }), { default: () => new Date() }),
+  // createdAt: Schema.optionalWith(Schema.Date, { default: () => new Date() }).annotations({ description: "Created At" }),
   // updatedAt: Schema.Date.annotations({ description: "Updated At" }),
   // deletedAt: Schema.NullOr(Schema.Date).annotations({ description: "Delete At" })
 }).pipe(

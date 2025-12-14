@@ -15,7 +15,7 @@ import * as http from "node:http"
 import { v7 as uuidv7 } from "uuid"
 import { IdempotencyKey } from "./IdempotencyKey.js"
 import { OrderId } from "./Order.js"
-import { AggregateId, Outbox } from "./Outbox.js"
+import { Outbox } from "./Outbox.js"
 import { ProductId } from "./Product.js"
 import { SagaLogId } from "./SagaLog.js"
 
@@ -25,7 +25,7 @@ export const InventorySchemaStruct = Schema.Struct({
   reservedQuantity: Schema.optionalWith(Schema.Number.annotations({ description: "Reserved Quantity" }), {
     default: () => 0
   })
-  // createdAt: Schema.optionalWith(Schema.Date.annotations({ description: "Created At" }), { default: () => new Date() })
+  // createdAt: Schema.optionalWith(Schema.Date, { default: () => new Date() }).annotations({ description: "Created At" })
   // updatedAt: Schema.Date.annotations({ description: "Updated At" }),
   // deletedAt: Schema.NullOr(Schema.Date).annotations({ description: "Delete At" })
 }).pipe(
@@ -186,7 +186,7 @@ export const InventoryHttpApiLive = HttpApiBuilder.group(
           const shippingEventId = uuidv7()
           const outboxEntry = new Outbox({
             eventId: shippingEventId,
-            aggregateId: AggregateId.make(orderId.toString()),
+            aggregateId: OrderId.make(orderId.toString()),
             eventType: "InventoryUpdated",
             payload: {
               customerId: sagaLog.customerId || "unknown",
