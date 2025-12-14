@@ -31,6 +31,8 @@
   "dependencies": {
     "@effect/platform": "latest",
     "@effect/platform-node": "latest",
+    "@effect/sql": "latest",
+    "@effect/sql-pg": "latest",
     "effect": "latest",
     "uuid": "^13.0.0"
   },

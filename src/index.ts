@@ -2,9 +2,6 @@
 export * as Customer from "./Customer.js"
 
 
-export * as Database from "./Database.js"
-
-
 export * as IdempotencyKey from "./IdempotencyKey.js"
 
 

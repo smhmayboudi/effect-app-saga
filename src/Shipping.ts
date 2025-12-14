@@ -127,9 +127,9 @@ const ShippingHttpApiLive = HttpApiBuilder.group(
           const sagaLog = await SagaLog.findOne({ sagaLogId })
 
           if (!sagaLog) {
-            // throw new Error("Saga not found")
+            // throw new Error("SagaLog not found")
             return {
-              message: "Saga not found",
+              message: "SagaLog not found",
               success: false
             }
           }

@@ -130,9 +130,9 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
 
           if (!sagaLog) {
             console.error(`[Payment Service] SagaLog not found for sagaLogId: ${sagaLogId}`)
-            // throw new Error("Saga not found")
+            // throw new Error("SagaLog not found")
             return {
-              message: "Saga not found",
+              message: "SagaLog not found",
               success: false
             }
           }
@@ -143,7 +143,11 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
           sagaLog = await SagaLog.findOne({ sagaLogId })
 
           if (!sagaLog) {
-            throw new Error("SagaLog not found")
+            // throw new Error("SagaLog not found")
+            return {
+              message: "SagaLog not found",
+              success: false
+            }
           }
 
           // Simulate payment processing - randomly succeed or fail for demo
