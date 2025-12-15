@@ -19,7 +19,7 @@ import { IdempotencyKey } from "./IdempotencyKey.js"
 import { OrderId } from "./Order.js"
 import { Outbox, OutboxId, OutboxRepository, OutboxRepositoryLive } from "./Outbox.js"
 import { ProductId } from "./Product.js"
-import { SagaLogId, SagaLogRepository, SagaLogRepositoryLive } from "./SagaLog.js"
+import { SagaLog, SagaLogId, SagaLogRepository, SagaLogRepositoryLive } from "./SagaLog.js"
 
 export const InventoryId = Schema.UUID.pipe(
   Schema.brand("InventoryId"),
@@ -223,10 +223,8 @@ const InventoryHttpApiLive = HttpApiBuilder.group(
                 success: true
               }
             }
-
             // Get saga log to track progress
-            const sagaLog = yield* sagaLogRepository.findOne({ sagaLogId })
-
+            let sagaLog = yield* sagaLogRepository.findOne({ sagaLogId })
             // Execute inventory update without transaction
             let inventory = yield* inventoryRepository.findOne({ productId })
             if (!inventory) {
@@ -240,22 +238,29 @@ const InventoryHttpApiLive = HttpApiBuilder.group(
               inventory = yield* inventoryRepository.save(inventory)
               yield* Console.log(`[Inventory Service] Initialized inventory for product ${productId} with 100 units`)
             }
-
             // Update saga log
-            const inventoryStep = sagaLog.steps.find((s) => s.name === "UPDATE_INVENTORY")
-            inventoryStep.status = "IN_PROGRESS"
-            inventoryStep.timestamp = new Date()
-            yield* sagaLogRepository.save(sagaLog)
-
+            sagaLog = new SagaLog({
+              ...sagaLog,
+              steps: sagaLog.steps.map((step) =>
+                step.name === "UPDATE_INVENTORY"
+                  ? { ...step, status: "IN_PROGRESS", timestamp: new Date() }
+                  : step
+              )
+            })
+            sagaLog = yield* sagaLogRepository.save(sagaLog)
             // Check if there's enough inventory
             if (inventory.quantity - inventory.reservedQuantity < quantity) {
               yield* Console.log(`[Inventory Service] Insufficient inventory for product: ${productId}`)
-
               // Update saga log
-              inventoryStep.status = "FAILED"
-              inventoryStep.error = "Insufficient inventory"
-              yield* sagaLogRepository.save(sagaLog)
-
+              sagaLog = new SagaLog({
+                ...sagaLog,
+                steps: sagaLog.steps.map((step) =>
+                  step.name === "UPDATE_INVENTORY"
+                    ? { ...step, status: "FAILED", error: "Insufficient inventory" }
+                    : step
+                )
+              })
+              sagaLog = yield* sagaLogRepository.save(sagaLog)
               // throw new Error("Insufficient inventory")
               return {
                 error: "Insufficient inventory",
@@ -263,7 +268,6 @@ const InventoryHttpApiLive = HttpApiBuilder.group(
                 success: false
               }
             }
-
             // Update inventory - reduce available quantity and increase reserved
             inventory = new Inventory({
               ...inventory,
@@ -272,16 +276,20 @@ const InventoryHttpApiLive = HttpApiBuilder.group(
               lastIdempotencyKey: idempotencyKey
             })
             inventory = yield* inventoryRepository.save(inventory)
-
             yield* Console.log(`[Inventory Service] Inventory updated for product: ${productId}`)
-
             // Update saga log
-            inventoryStep.status = "COMPLETED"
-            yield* sagaLogRepository.save(sagaLog)
-
+            // inventoryStep.status = "COMPLETED"
+            sagaLog = new SagaLog({
+              ...sagaLog,
+              steps: sagaLog.steps.map((step) =>
+                step.name === "UPDATE_INVENTORY"
+                  ? { ...step, status: "COMPLETED" }
+                  : step
+              )
+            })
+            sagaLog = yield* sagaLogRepository.save(sagaLog)
             // Write shipping event to Outbox
             yield* Console.log(`[Inventory Service] Writing shipping event to Outbox`)
-
             const shippingEventId = OutboxId.make(uuidv7())
             const outboxEntry = new Outbox({
               id: shippingEventId,
@@ -296,7 +304,6 @@ const InventoryHttpApiLive = HttpApiBuilder.group(
               targetEndpoint: "/shipments/deliver-order",
               isPublished: false
             })
-
             yield* outboxRepository.save(outboxEntry)
             yield* Console.log(`[Inventory Service] Shipping event written to Outbox: ${shippingEventId}`)
             yield* Console.log(`[Inventory Service] Saga will be completed when Shipping processes event\n`)
@@ -321,7 +328,6 @@ const InventoryHttpApiLive = HttpApiBuilder.group(
                 success: true
               }
             }
-
             inventory = yield* inventoryRepository.findOne({ productId })
             if (!inventory) {
               // throw new Error("Inventory not found")
@@ -330,7 +336,6 @@ const InventoryHttpApiLive = HttpApiBuilder.group(
                 success: false
               }
             }
-
             // Restore inventory
             inventory = new Inventory({
               ...inventory,
@@ -340,7 +345,6 @@ const InventoryHttpApiLive = HttpApiBuilder.group(
               reservedQuantity: Math.max(0, inventory.reservedQuantity - quantity)
             })
             inventory = yield* inventoryRepository.save(inventory)
-
             yield* Console.log(`[Inventory Service] Inventory compensated for product: ${productId}`)
 
             return {
@@ -357,7 +361,6 @@ const InventoryHttpApiLive = HttpApiBuilder.group(
               `[Inventory Service] Inventory initialize ${{ productId, quantity }}`
             )
             let inventory = yield* inventoryRepository.findOne({ productId })
-
             if (!inventory) {
               inventory = new Inventory({
                 id: InventoryId.make(uuidv7()),
@@ -371,7 +374,6 @@ const InventoryHttpApiLive = HttpApiBuilder.group(
                 quantity: inventory.quantity + quantity
               })
             }
-
             inventory = yield* inventoryRepository.save(inventory)
 
             return {
@@ -386,7 +388,6 @@ const InventoryHttpApiLive = HttpApiBuilder.group(
             `[Inventory Service] Inventory initialize ${{ productId }}`
           )
           const inventory = yield* inventoryRepository.findOne({ productId })
-
           if (!inventory) {
             // throw new Error("Inventory not found")
             return {
