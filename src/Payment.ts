@@ -42,7 +42,7 @@ const PaymentSchema = Schema.Struct({
 }).pipe(
   Schema.annotations({ description: "Payment", identifier: "Payment" })
 )
-type ServiceSchema = typeof PaymentSchema.Type
+type PaymentSchema = typeof PaymentSchema.Type
 
 class Payment extends Schema.Class<Payment>("Payment")(PaymentSchema) {
   static decodeUnknown = Schema.decodeUnknown(Payment)

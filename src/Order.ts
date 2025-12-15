@@ -42,7 +42,7 @@ const OrderSchema = Schema.Struct({
 }).pipe(
   Schema.annotations({ description: "Order", identifier: "Order" })
 )
-type ServiceSchema = typeof OrderSchema.Type
+type OrderSchema = typeof OrderSchema.Type
 
 class Order extends Schema.Class<Order>("Order")(OrderSchema) {
   static decodeUnknown = Schema.decodeUnknown(Order)

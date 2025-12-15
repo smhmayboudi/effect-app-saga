@@ -45,7 +45,7 @@ const OutboxSchema = Schema.Struct({
 }).pipe(
   Schema.annotations({ description: "Outbox", identifier: "Outbox" })
 )
-type ServiceSchema = typeof OutboxSchema.Type
+type OutboxSchema = typeof OutboxSchema.Type
 
 export class Outbox extends Schema.Class<Outbox>("Outbox")(OutboxSchema) {
   static decodeUnknown = Schema.decodeUnknown(Outbox)
@@ -103,18 +103,11 @@ CREATE TABLE tbl_outbox (
     INDEX idx_outbox_target_service (target_service),
     INDEX idx_outbox_created_at (created_at),
     INDEX idx_outbox_event_type (event_type),
+    INDEX idx_outbox_unpublished_service (target_service, is_published) WHERE is_published = FALSE,
     
     -- Unique constraint
     CONSTRAINT uq_outbox_event_id UNIQUE (event_id)
-
-    -- Reference to Orders table if it exists
-    -- aggregateId UUID NOT NULL REFERENCES tbl_order(id),
 );
-    `
-    yield* sql`
-CREATE INDEX idx_outbox_unpublished_service 
-ON tbl_outbox (target_service, is_published) 
-WHERE is_published = FALSE;
     `
 
     return {
