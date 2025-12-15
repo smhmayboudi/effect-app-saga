@@ -18,7 +18,7 @@ import { v7 as uuidv7 } from "uuid"
 import { CustomerId } from "./Customer.js"
 import { IdempotencyKey } from "./IdempotencyKey.js"
 import { OrderId } from "./Order.js"
-import { SagaLogId, SagaLogRepository, SagaLogRepositoryLive } from "./SagaLog.js"
+import { SagaLog, SagaLogId, SagaLogRepository, SagaLogRepositoryLive } from "./SagaLog.js"
 
 const ShippingId = Schema.UUID.pipe(
   Schema.brand("ShippingId"),
@@ -209,9 +209,8 @@ const ShippingHttpApiLive = HttpApiBuilder.group(
                 success: true
               }
             }
-
             // Get saga log to track progress
-            const sagaLog = yield* sagaLogRepository.findOne({ sagaLogId })
+            let sagaLog = yield* sagaLogRepository.findOne({ sagaLogId })
             if (!sagaLog) {
               // throw new Error("SagaLog not found")
               return {
@@ -219,7 +218,6 @@ const ShippingHttpApiLive = HttpApiBuilder.group(
                 success: false
               }
             }
-
             // Execute shipping creation and saga completion without transaction
             // try {
             let shipping = new Shipping({
@@ -230,34 +228,40 @@ const ShippingHttpApiLive = HttpApiBuilder.group(
               status: "SHIPPED",
               sagaLogId
             })
-
             shipping = yield* shippingRepository.save(shipping)
             yield* Console.log(`[Shipping Service] Shipping created: ${orderId}`)
-
             // Update saga log
             const shippingStep = sagaLog.steps.find((s) => s.name === "DELIVER_ORDER")
             if (shippingStep) {
-              shippingStep.status = "IN_PROGRESS"
-              shippingStep.timestamp = new Date()
+              sagaLog = new SagaLog({
+                ...sagaLog,
+                steps: sagaLog.steps.map((step) =>
+                  step.name === "DELIVER_ORDER"
+                    ? { ...step, status: "IN_PROGRESS", timestamp: new Date() }
+                    : step
+                )
+              })
               yield* sagaLogRepository.save(sagaLog)
-
               yield* Console.log(`[Shipping Service] Order delivered: ${orderId}`)
-
               // Mark saga as completed
-              shippingStep.status = "COMPLETED"
-              sagaLog.status = "COMPLETED"
+              sagaLog = new SagaLog({
+                ...sagaLog,
+                status: "COMPLETED",
+                steps: sagaLog.steps.map((step) =>
+                  step.name === "DELIVER_ORDER"
+                    ? { ...step, status: "COMPLETED" }
+                    : step
+                )
+              })
               yield* sagaLogRepository.save(sagaLog)
-
               yield* Console.log(`[Shipping Service] Saga COMPLETED: ${sagaLogId}\n`)
             } else {
               console.error(`[Shipping Service] DELIVER_ORDER step not found in saga`)
             }
-
             return shipping
             // } catch (innerError) {
             //   throw innerError
             // }
-
             // return {
             //   message: "Order shipped successfully and saga completed",
             //   sagaLogId,
@@ -280,7 +284,6 @@ const ShippingHttpApiLive = HttpApiBuilder.group(
                 message: "Shipping already cancelled"
               }
             }
-
             // shipping = await Shipping.findOneAndUpdate(
             //   { orderId, sagaLogId },
             //   {
@@ -289,7 +292,6 @@ const ShippingHttpApiLive = HttpApiBuilder.group(
             //   },
             //   { new: true }
             // )
-
             // TODO: test without orderId
             shipping = yield* shippingRepository.findOne({ sagaLogId })
             if (!shipping) {
@@ -299,14 +301,12 @@ const ShippingHttpApiLive = HttpApiBuilder.group(
                 success: false
               }
             }
-
             shipping = new Shipping({
               ...shipping,
               compensationKey: idempotencyKey,
               status: "CANCELLED"
             })
-            shipping = yield* shippingRepository.save()
-
+            shipping = yield* shippingRepository.save(shipping)
             yield* Console.log(`[Shipping Service] Shipping cancelled: ${orderId}`)
 
             return {
@@ -321,7 +321,6 @@ const ShippingHttpApiLive = HttpApiBuilder.group(
             `[Shipping Service] Shipping get ${{ shippingId }}`
           )
           const shipping = yield* shippingRepository.findOne({ shippingId })
-
           if (!shipping) {
             // throw new Error("Shipping not found")
             return {
