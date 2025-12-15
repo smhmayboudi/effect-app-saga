@@ -10,13 +10,15 @@ import {
 import { NodeHttpServer, NodeRuntime } from "@effect/platform-node"
 import * as HttpApiScalar from "@effect/platform/HttpApiScalar"
 import * as HttpApiSwagger from "@effect/platform/HttpApiSwagger"
-import { Console, Effect, flow, Layer, Logger, LogLevel, Schema } from "effect"
+import { SqlClient } from "@effect/sql"
+import { PgClient } from "@effect/sql-pg"
+import { Console, Context, Effect, flow, Layer, Logger, LogLevel, Schema, String } from "effect"
 import * as http from "node:http"
 import { v7 as uuidv7 } from "uuid"
 import { CustomerId } from "./Customer.js"
 import { IdempotencyKey } from "./IdempotencyKey.js"
 import { OrderId } from "./Order.js"
-import { SagaLog, SagaLogId, SagaLogRepository } from "./SagaLog.js"
+import { SagaLogId, SagaLogRepository } from "./SagaLog.js"
 
 const ShippingId = Schema.UUID.pipe(
   Schema.brand("ShippingId"),
@@ -25,11 +27,12 @@ const ShippingId = Schema.UUID.pipe(
 type ShippingId = typeof ShippingId.Type
 
 const ShippingSchema = Schema.Struct({
+  compensationKey: Schema.optionalWith(Schema.NullOr(IdempotencyKey), { default: () => null }),
   customerId: CustomerId,
+  id: ShippingId,
   idempotencyKey: IdempotencyKey,
   orderId: OrderId,
   sagaLogId: SagaLogId,
-  shippingId: ShippingId,
   status: Schema.optionalWith(
     Schema.Literal("PENDING", "SHIPPED", "DELIVERED", "CANCELLED"),
     { default: () => "PENDING" }
@@ -40,11 +43,99 @@ const ShippingSchema = Schema.Struct({
 }).pipe(
   Schema.annotations({ description: "Shipping", identifier: "Shipping" })
 )
-type ServiceSchema = typeof ShippingSchema.Type
+type ShippingSchema = typeof ShippingSchema.Type
 
 class Shipping extends Schema.Class<Shipping>("Shipping")(ShippingSchema) {
   static decodeUnknown = Schema.decodeUnknown(Shipping)
 }
+
+class ShippingRepository extends Context.Tag("@context/ShippingRepository")<
+  ShippingRepository,
+  {
+    readonly findOne: (options: {
+      compensationOrder?: {
+        compensationKey: IdempotencyKey
+        orderId: OrderId
+      }
+      idempotencyKey?: IdempotencyKey
+      sagaLogId?: SagaLogId
+      shippingId?: ShippingId
+    }) => Effect.Effect<Shipping>
+    readonly save: (data: Shipping) => Effect.Effect<Shipping>
+  }
+>() {}
+
+const ShippingRepositoryLive = Layer.effect(
+  ShippingRepository,
+  Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+
+    yield* sql`
+-- Create ENUM type for shipping status
+CREATE TYPE shipping_status AS ENUM ('PENDING', 'SHIPPED', 'DELIVERED', 'CANCELLED');
+    `
+    yield* sql`
+-- Create the shipping table without foreign key constraints
+CREATE TABLE tbl_shipping (
+    id UUID PRIMARY KEY,
+    customer_id UUID NOT NULL,
+    idempotency_key UUID NOT NULL,
+    order_id UUID NOT NULL,
+    saga_log_id UUID NOT NULL,
+    status shipping_status NOT NULL DEFAULT 'PENDING',
+    
+    compensation_key UUID,
+
+    -- Indexes for better performance
+    INDEX idx_shipping_customer_id ON (customer_id),
+    INDEX idx_shipping_order_id ON (order_id),
+    INDEX idx_shipping_status ON (status),
+    INDEX idx_shipping_saga_log_id ON (saga_log_id),
+    INDEX idx_shipping_idempotency_key ON (idempotency_key),
+    
+    -- Add unique constraints only
+    CONSTRAINT unique_idempotency_key UNIQUE (idempotency_key),
+    CONSTRAINT unique_order_id UNIQUE (order_id)
+);
+    `
+
+    return {
+      findOne: ({ compensationOrder, idempotencyKey, sagaLogId, shippingId }) =>
+        (compensationOrder ?
+          sql`SELECT * FROM tbl_shipping WHERE compensation_key = ${compensationOrder.compensationKey} AND order_id = ${compensationOrder.orderId} LIMIT 1` :
+          idempotencyKey ?
+          sql`SELECT * FROM tbl_shipping WHERE idempotency_key = ${idempotencyKey} LIMIT 1` :
+          sagaLogId ?
+          sql`SELECT * FROM tbl_shipping WHERE saga_log_id = ${sagaLogId} LIMIT 1` :
+          shippingId ?
+          sql`SELECT * FROM tbl_shipping WHERE shipping_id = ${shippingId} LIMIT 1` :
+          sql`SELECT * FROM tbl_shipping LIMIT 1`).pipe(
+            Effect.catchTag("SqlError", Effect.die),
+            Effect.flatMap((rows) => Effect.succeed(rows[0])),
+            Effect.flatMap((row) => Shipping.decodeUnknown(row)),
+            Effect.catchTag("ParseError", Effect.die)
+          ),
+      save: (data) =>
+        sql`
+INSERT INTO tbl_shipping ${sql.insert({ ...data })}
+ON CONFLICT (id) 
+DO UPDATE SET
+    customer_id = EXCLUDED.customer_id,
+    idempotency_key = EXCLUDED.idempotency_key,
+    order_id = EXCLUDED.order_id,
+    saga_log_id = EXCLUDED.saga_log_id,
+    status = EXCLUDED.status,
+    compensation_key = EXCLUDED.compensation_key
+RETURNING *;
+`.pipe(
+          Effect.catchTag("SqlError", Effect.die),
+          Effect.flatMap((rows) => Effect.succeed(rows[0])),
+          Effect.flatMap((row) => Shipping.decodeUnknown(row)),
+          Effect.catchTag("ParseError", Effect.die)
+        )
+    }
+  })
+)
 
 const ShippingDeliverRequest = Schema.Struct({
   customerId: CustomerId,
@@ -106,6 +197,7 @@ const ShippingHttpApiLive = HttpApiBuilder.group(
   (handlers) =>
     Effect.gen(function*() {
       const sagaLogRepository = yield* SagaLogRepository
+      const shippingRepository = yield* ShippingRepository
 
       return handlers.handle(
         "deliver",
@@ -115,7 +207,7 @@ const ShippingHttpApiLive = HttpApiBuilder.group(
               `[Shipping Service] Shipping deliver ${{ idempotencyKey, customerId, orderId, sagaLogId }}`
             )
             // Check if shipping already created
-            const existingShipping = await Shipping.findOne({ idempotencyKey })
+            const existingShipping = yield* shippingRepository.findOne({ idempotencyKey })
             if (existingShipping) {
               yield* Console.log(`[Shipping Service] Shipping already created with key: ${idempotencyKey}`)
               return {
@@ -128,7 +220,6 @@ const ShippingHttpApiLive = HttpApiBuilder.group(
 
             // Get saga log to track progress
             const sagaLog = yield* sagaLogRepository.findOne({ sagaLogId })
-
             if (!sagaLog) {
               // throw new Error("SagaLog not found")
               return {
@@ -139,8 +230,8 @@ const ShippingHttpApiLive = HttpApiBuilder.group(
 
             // Execute shipping creation and saga completion without transaction
             // try {
-            const shipping = new Shipping({
-              shippingId: ShippingId.make(uuidv7()),
+            let shipping = new Shipping({
+              id: ShippingId.make(uuidv7()),
               idempotencyKey,
               orderId,
               customerId,
@@ -148,7 +239,7 @@ const ShippingHttpApiLive = HttpApiBuilder.group(
               sagaLogId
             })
 
-            await shipping.save()
+            shipping = yield* shippingRepository.save(shipping)
             yield* Console.log(`[Shipping Service] Shipping created: ${orderId}`)
 
             // Update saga log
@@ -187,7 +278,10 @@ const ShippingHttpApiLive = HttpApiBuilder.group(
           Effect.gen(function*() {
             yield* Console.log(`[Shipping Service] Shipping cancel ${{ idempotencyKey, orderId, sagaLogId }}`)
             // Check if already cancelled
-            if (await Shipping.findOne({ compensationKey: idempotencyKey, orderId })) {
+            let shipping = yield* shippingRepository.findOne({
+              compensationOrder: { compensationKey: idempotencyKey, orderId }
+            })
+            if (shipping) {
               console.log(`[Shipping Service] Shipping already cancelled with key: ${idempotencyKey}`)
               return {
                 success: true,
@@ -195,16 +289,18 @@ const ShippingHttpApiLive = HttpApiBuilder.group(
               }
             }
 
-            const shipment = await Shipping.findOneAndUpdate(
-              { orderId, sagaLogId },
-              {
-                status: "CANCELLED",
-                compensationKey: idempotencyKey
-              },
-              { new: true }
-            )
+            // shipping = await Shipping.findOneAndUpdate(
+            //   { orderId, sagaLogId },
+            //   {
+            //     status: "CANCELLED",
+            //     compensationKey: idempotencyKey
+            //   },
+            //   { new: true }
+            // )
 
-            if (!shipment) {
+            // TODO: test without orderId
+            shipping = yield* shippingRepository.findOne({ sagaLogId })
+            if (!shipping) {
               // throw new Error("Shipping not found")
               return {
                 message: "Shipping not found",
@@ -212,10 +308,17 @@ const ShippingHttpApiLive = HttpApiBuilder.group(
               }
             }
 
+            shipping = new Shipping({
+              ...shipping,
+              compensationKey: idempotencyKey,
+              status: "CANCELLED"
+            })
+            shipping = yield* shippingRepository.save()
+
             yield* Console.log(`[Shipping Service] Shipping cancelled: ${orderId}`)
 
             return {
-              data: shipment,
+              data: shipping,
               message: "Shipping cancelled successfully",
               success: true
             }
@@ -225,7 +328,7 @@ const ShippingHttpApiLive = HttpApiBuilder.group(
           yield* Console.log(
             `[Shipping Service] Shipping get ${{ shippingId }}`
           )
-          const shipping = await Shipping.findOne({ shippingId })
+          const shipping = yield* shippingRepository.findOne({ shippingId })
 
           if (!shipping) {
             // throw new Error("Shipping not found")
@@ -243,8 +346,19 @@ const ShippingHttpApiLive = HttpApiBuilder.group(
     })
 )
 
+const PgLive = PgClient.layer({
+  database: "effect_pg_dev",
+  transformQueryNames: String.camelToSnake,
+  transformResultNames: String.snakeToCamel
+})
+
+const ApplicationLayer = Layer.mergeAll(
+  ShippingRepositoryLive,
+  PgLive
+).pipe(Layer.provideMerge(ShippingHttpApiLive))
+
 const ApiLive = HttpApiBuilder.api(Api)
-  .pipe(Layer.provide(ShippingHttpApiLive))
+  .pipe(Layer.provide(ApplicationLayer))
 
 const gracefulShutdown = <A, E, R>(layer: Layer.Layer<A, E, R>) =>
   Layer.scopedDiscard(
