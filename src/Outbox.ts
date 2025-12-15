@@ -311,9 +311,15 @@ const PgLive = PgClient.layer({
   transformResultNames: String.snakeToCamel
 })
 
-export const ApplicationLayer = Layer.mergeAll(
-  ConfigServiceLive,
-  FetchHttpClient.layer,
-  OutboxRepositoryLive,
-  PgLive
-).pipe(Layer.provideMerge(OutboxPublisherLive))
+export const ApplicationLayer = OutboxPublisherLive.pipe(
+  Layer.provide(
+    Layer.provideMerge(
+      Layer.mergeAll(
+        ConfigServiceLive,
+        FetchHttpClient.layer,
+        OutboxRepositoryLive
+      ),
+      PgLive
+    )
+  )
+)
