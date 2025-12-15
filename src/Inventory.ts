@@ -10,17 +10,34 @@ import {
 import { NodeHttpServer, NodeRuntime } from "@effect/platform-node"
 import * as HttpApiScalar from "@effect/platform/HttpApiScalar"
 import * as HttpApiSwagger from "@effect/platform/HttpApiSwagger"
-import { Console, Effect, flow, Layer, Logger, LogLevel, Schema } from "effect"
+import { SqlClient } from "@effect/sql"
+import { PgClient } from "@effect/sql-pg"
+import { Console, Context, Effect, flow, Layer, Logger, LogLevel, Schema, String } from "effect"
 import * as http from "node:http"
 import { v7 as uuidv7 } from "uuid"
 import { IdempotencyKey } from "./IdempotencyKey.js"
 import { OrderId } from "./Order.js"
-import { Outbox } from "./Outbox.js"
+import { EventId, Outbox, OutboxRepository } from "./Outbox.js"
 import { ProductId } from "./Product.js"
-import { SagaLog, SagaLogId, SagaLogRepository } from "./SagaLog.js"
+import { SagaLogId, SagaLogRepository } from "./SagaLog.js"
+
+export const InventoryId = Schema.UUID.pipe(
+  Schema.brand("InventoryId"),
+  Schema.annotations({ description: "Inventory Identification" })
+)
+export type InventoryId = typeof InventoryId.Type
 
 const InventorySchemaStruct = Schema.Struct({
-  productId: ProductId,
+  id: InventoryId,
+  compensationOrder: Schema.optionalWith(
+    Schema.NullOr(Schema.Struct({
+      compensationKey: IdempotencyKey,
+      orderId: OrderId
+    })),
+    { default: () => null }
+  ),
+  lastIdempotencyKey: Schema.optionalWith(Schema.NullOr(IdempotencyKey), { default: () => null }),
+  productId: Schema.optionalWith(Schema.NullOr(ProductId), { default: () => null }),
   quantity: Schema.Number.annotations({ description: "Quantity" }),
   reservedQuantity: Schema.optionalWith(Schema.Number.annotations({ description: "Reserved Quantity" }), {
     default: () => 0
@@ -36,6 +53,93 @@ type InventorySchemaStruct = typeof InventorySchemaStruct.Type
 class Inventory extends Schema.Class<Inventory>("Inventory")(InventorySchemaStruct) {
   static decodeUnknown = Schema.decodeUnknown(InventorySchemaStruct)
 }
+
+class InventoryRepository extends Context.Tag("@context/InventoryRepository")<
+  InventoryRepository,
+  {
+    readonly findOne: (options: {
+      compensationOrder?: {
+        compensationKey: IdempotencyKey
+        orderId: OrderId
+      }
+      lastIdempotencyKey?: IdempotencyKey
+      productId?: ProductId
+    }) => Effect.Effect<Inventory>
+    readonly save: (data: Inventory) => Effect.Effect<Inventory>
+  }
+>() {}
+
+const InventoryRepositoryLive = Layer.effect(
+  InventoryRepository,
+  Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+
+    yield* sql`
+-- Create Inventory table without foreign key constraints
+CREATE TABLE tbl_inventory (
+    -- Primary key
+    id UUID PRIMARY KEY,
+    
+    -- compensationOrder nested fields
+    compensation_key UUID,
+    order_id UUID,
+    
+    -- Other fields
+    last_idempotency_key UUID,
+    product_id UUID,
+    quantity INTEGER NOT NULL CHECK (quantity >= 0),
+    reserved_quantity INTEGER DEFAULT 0 CHECK (reserved_quantity >= 0),
+    
+    -- Indexes for better performance
+    INDEX idx_inventory_product_id ON (product_id),
+    INDEX idx_inventory_compensation_key ON (compensation_key),
+    INDEX idx_inventory_last_idempotency_key ON (last_idempotency_key),
+    INDEX idx_inventory_order_id ON (order_id),
+    INDEX idx_inventory_compensation_order ON (compensation_key, order_id) WHERE compensation_key IS NOT NULL AND order_id IS NOT NULL,
+    
+    -- Ensure reserved quantity never exceeds available quantity
+    CONSTRAINT reserved_quantity_valid CHECK (reserved_quantity <= quantity),
+    
+    -- Composite unique constraint on compensation_key and order_id (when both exist)
+    CONSTRAINT unique_compensation_order UNIQUE NULLS NOT DISTINCT (compensation_key, order_id)
+);
+    `
+
+    return {
+      findOne: ({ compensationOrder, lastIdempotencyKey, productId }) =>
+        (compensationOrder ?
+          sql`SELECT * FROM tbl_inventory WHERE compensation_key = ${compensationOrder.compensationKey} AND order_id = ${compensationOrder.orderId} LIMIT 1` :
+          lastIdempotencyKey ?
+          sql`SELECT * FROM tbl_inventory WHERE last_idempotency_key = ${lastIdempotencyKey} LIMIT 1` :
+          productId ?
+          sql`SELECT * FROM tbl_inventory WHERE product_id = ${productId} LIMIT 1` :
+          sql`SELECT * FROM tbl_inventory LIMIT 1`).pipe(
+            Effect.catchTag("SqlError", Effect.die),
+            Effect.flatMap((rows) => Effect.succeed(rows[0])),
+            Effect.flatMap((row) => Inventory.decodeUnknown(row)),
+            Effect.catchTag("ParseError", Effect.die)
+          ),
+      save: (data) =>
+        sql`
+INSERT INTO tbl_inventory ${sql.insert({ ...data })}
+ON CONFLICT (id) 
+DO UPDATE SET
+    compensation_key = EXCLUDED.compensation_key,
+    order_id = EXCLUDED.order_id,
+    last_idempotency_key = EXCLUDED.last_idempotency_key,
+    product_id = EXCLUDED.product_id,
+    quantity = EXCLUDED.quantity,
+    reserved_quantity = EXCLUDED.reserved_quantity
+RETURNING *;
+`.pipe(
+          Effect.catchTag("SqlError", Effect.die),
+          Effect.flatMap((rows) => Effect.succeed(rows[0])),
+          Effect.flatMap((row) => Inventory.decodeUnknown(row)),
+          Effect.catchTag("ParseError", Effect.die)
+        )
+    }
+  })
+)
 
 const InventoryUpdateRequest = Schema.Struct({
   orderId: OrderId,
@@ -115,7 +219,9 @@ const InventoryHttpApiLive = HttpApiBuilder.group(
   "inventory",
   (handlers) =>
     Effect.gen(function*() {
+      const inventoryRepository = yield* InventoryRepository
       const sagaLogRepository = yield* SagaLogRepository
+      const outboxRepository = yield* OutboxRepository
 
       return handlers.handle(
         "update",
@@ -124,7 +230,7 @@ const InventoryHttpApiLive = HttpApiBuilder.group(
             yield* Console.log(
               `[Inventory Service] Inventory update ${{ idempotencyKey, orderId, productId, quantity, sagaLogId }}`
             )
-            const existingInventoryLog = await Inventory.findOne({
+            const existingInventoryLog = yield* inventoryRepository.findOne({
               lastIdempotencyKey: idempotencyKey
             })
             if (existingInventoryLog) {
@@ -140,15 +246,16 @@ const InventoryHttpApiLive = HttpApiBuilder.group(
             const sagaLog = yield* sagaLogRepository.findOne({ sagaLogId })
 
             // Execute inventory update without transaction
-            let inventory = await Inventory.findOne({ productId })
+            let inventory = yield* inventoryRepository.findOne({ productId })
             if (!inventory) {
               // Initialize inventory with default stock of 100 units
               inventory = new Inventory({
+                id: InventoryId.make(uuidv7()),
                 productId,
                 quantity: 100,
                 reservedQuantity: 0
               })
-              await inventory.save()
+              inventory = yield* inventoryRepository.save(inventory)
               yield* Console.log(`[Inventory Service] Initialized inventory for product ${productId} with 100 units`)
             }
 
@@ -156,7 +263,7 @@ const InventoryHttpApiLive = HttpApiBuilder.group(
             const inventoryStep = sagaLog.steps.find((s) => s.stepName === "UPDATE_INVENTORY")
             inventoryStep.status = "IN_PROGRESS"
             inventoryStep.timestamp = new Date()
-            await sagaLog.save()
+            yield* sagaLogRepository.save(sagaLog)
 
             // Check if there's enough inventory
             if (inventory.quantity - inventory.reservedQuantity < quantity) {
@@ -165,7 +272,7 @@ const InventoryHttpApiLive = HttpApiBuilder.group(
               // Update saga log
               inventoryStep.status = "FAILED"
               inventoryStep.error = "Insufficient inventory"
-              await sagaLog.save()
+              yield* sagaLogRepository.save(sagaLog)
 
               // throw new Error("Insufficient inventory")
               return {
@@ -176,21 +283,24 @@ const InventoryHttpApiLive = HttpApiBuilder.group(
             }
 
             // Update inventory - reduce available quantity and increase reserved
-            inventory.quantity -= quantity
-            inventory.reservedQuantity += quantity
-            inventory.lastIdempotencyKey = idempotencyKey
-            await inventory.save()
+            inventory = new Inventory({
+              ...inventory,
+              quantity: inventory.quantity - quantity,
+              reservedQuantity: inventory.reservedQuantity + quantity,
+              lastIdempotencyKey: idempotencyKey
+            })
+            inventory = yield* inventoryRepository.save(inventory)
 
             yield* Console.log(`[Inventory Service] Inventory updated for product: ${productId}`)
 
             // Update saga log
             inventoryStep.status = "COMPLETED"
-            await sagaLog.save()
+            yield* sagaLogRepository.save(sagaLog)
 
             // Write shipping event to Outbox
             yield* Console.log(`[Inventory Service] Writing shipping event to Outbox`)
 
-            const shippingEventId = uuidv7()
+            const shippingEventId = EventId.make(uuidv7())
             const outboxEntry = new Outbox({
               eventId: shippingEventId,
               aggregateId: OrderId.make(orderId.toString()),
@@ -205,7 +315,7 @@ const InventoryHttpApiLive = HttpApiBuilder.group(
               isPublished: false
             })
 
-            await outboxEntry.save()
+            yield* outboxRepository.save(outboxEntry)
             yield* Console.log(`[Inventory Service] Shipping event written to Outbox: ${shippingEventId}`)
             yield* Console.log(`[Inventory Service] Saga will be completed when Shipping processes event\n`)
 
@@ -219,8 +329,10 @@ const InventoryHttpApiLive = HttpApiBuilder.group(
               `[Inventory Service] Inventory compensate ${{ idempotencyKey, orderId, productId, quantity, sagaLogId }}`
             )
             // Check if already compensated
-            const inventoryC = await Inventory.findOne({ compensationKey: idempotencyKey, orderId })
-            if (inventoryC) {
+            let inventory = yield* inventoryRepository.findOne({
+              compensationOrder: { compensationKey: idempotencyKey, orderId }
+            })
+            if (inventory) {
               yield* Console.log(`[Inventory Service] Inventory already compensated with key: ${idempotencyKey}`)
               return {
                 message: "Inventory already compensated",
@@ -228,7 +340,7 @@ const InventoryHttpApiLive = HttpApiBuilder.group(
               }
             }
 
-            const inventory = await Inventory.findOne({ productId })
+            inventory = yield* inventoryRepository.findOne({ productId })
             if (!inventory) {
               // throw new Error("Inventory not found")
               return {
@@ -238,10 +350,13 @@ const InventoryHttpApiLive = HttpApiBuilder.group(
             }
 
             // Restore inventory
-            inventory.quantity += quantity
-            inventory.reservedQuantity = Math.max(0, inventory.reservedQuantity - quantity)
-            inventory.compensationKey = idempotencyKey
-            await inventory.save()
+            inventory = new Inventory({
+              ...inventory,
+              quantity: inventory.quantity + quantity,
+              reservedQuantity: Math.max(0, inventory.reservedQuantity - quantity),
+              compensationOrder: { compensationKey: idempotencyKey, orderId }
+            })
+            inventory = yield* inventoryRepository.save(inventory)
 
             yield* Console.log(`[Inventory Service] Inventory compensated for product: ${productId}`)
 
@@ -258,19 +373,23 @@ const InventoryHttpApiLive = HttpApiBuilder.group(
             yield* Console.log(
               `[Inventory Service] Inventory initialize ${{ productId, quantity }}`
             )
-            let inventory = await Inventory.findOne({ productId })
+            let inventory = yield* inventoryRepository.findOne({ productId })
 
             if (!inventory) {
               inventory = new Inventory({
+                id: InventoryId.make(uuidv7()),
                 productId,
                 quantity,
                 reservedQuantity: 0
               })
             } else {
-              inventory.quantity += quantity
+              inventory = new Inventory({
+                ...inventory,
+                quantity: inventory.quantity + quantity
+              })
             }
 
-            await inventory.save()
+            inventory = yield* inventoryRepository.save(inventory)
 
             return {
               data: inventory,
@@ -283,7 +402,7 @@ const InventoryHttpApiLive = HttpApiBuilder.group(
           yield* Console.log(
             `[Inventory Service] Inventory initialize ${{ productId }}`
           )
-          const inventory = await Inventory.findOne({ productId })
+          const inventory = yield* inventoryRepository.findOne({ productId })
 
           if (!inventory) {
             // throw new Error("Inventory not found")
@@ -302,8 +421,19 @@ const InventoryHttpApiLive = HttpApiBuilder.group(
     })
 )
 
+const PgLive = PgClient.layer({
+  database: "effect_pg_dev",
+  transformQueryNames: String.camelToSnake,
+  transformResultNames: String.snakeToCamel
+})
+
+const ApplicationLayer = Layer.mergeAll(
+  InventoryRepositoryLive,
+  PgLive
+).pipe(Layer.provideMerge(InventoryHttpApiLive))
+
 const ApiLive = HttpApiBuilder.api(Api)
-  .pipe(Layer.provide(InventoryHttpApiLive))
+  .pipe(Layer.provide(ApplicationLayer))
 
 const gracefulShutdown = <A, E, R>(layer: Layer.Layer<A, E, R>) =>
   Layer.scopedDiscard(
