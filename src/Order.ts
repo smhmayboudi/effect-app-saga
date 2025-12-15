@@ -19,7 +19,7 @@ import { CustomerId } from "./Customer.js"
 import { IdempotencyKey } from "./IdempotencyKey.js"
 import { Outbox, OutboxId } from "./Outbox.js"
 import { ProductId } from "./Product.js"
-import { SagaLog, SagaLogId, SagaLogRepository } from "./SagaLog.js"
+import { SagaLog, SagaLogId, SagaLogRepository, SagaLogRepositoryLive } from "./SagaLog.js"
 
 export const OrderId = Schema.UUID.pipe(
   Schema.brand("OrderId"),
@@ -374,10 +374,17 @@ const PgLive = PgClient.layer({
   transformResultNames: String.snakeToCamel
 })
 
-const ApplicationLayer = Layer.mergeAll(
-  OrderRepositoryLive,
-  PgLive
-).pipe(Layer.provideMerge(OrderHttpApiLive))
+const ApplicationLayer = OrderHttpApiLive.pipe(
+  Layer.provide(
+    Layer.provideMerge(
+      Layer.mergeAll(
+        OrderRepositoryLive,
+        SagaLogRepositoryLive
+      ),
+      PgLive
+    )
+  )
+)
 
 const ApiLive = HttpApiBuilder.api(Api)
   .pipe(Layer.provide(ApplicationLayer))

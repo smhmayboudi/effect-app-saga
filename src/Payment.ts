@@ -18,8 +18,8 @@ import { v7 as uuidv7 } from "uuid"
 import { CustomerId } from "./Customer.js"
 import { IdempotencyKey } from "./IdempotencyKey.js"
 import { OrderId } from "./Order.js"
-import { Outbox, OutboxId, OutboxRepository } from "./Outbox.js"
-import { SagaLogId, SagaLogRepository } from "./SagaLog.js"
+import { Outbox, OutboxId, OutboxRepository, OutboxRepositoryLive } from "./Outbox.js"
+import { SagaLogId, SagaLogRepository, SagaLogRepositoryLive } from "./SagaLog.js"
 
 const PaymentId = Schema.UUID.pipe(
   Schema.brand("PaymentId"),
@@ -383,10 +383,18 @@ const PgLive = PgClient.layer({
   transformResultNames: String.snakeToCamel
 })
 
-const ApplicationLayer = Layer.mergeAll(
-  PaymentRepositoryLive,
-  PgLive
-).pipe(Layer.provideMerge(PaymentHttpApiLive))
+const ApplicationLayer = PaymentHttpApiLive.pipe(
+  Layer.provide(
+    Layer.provideMerge(
+      Layer.mergeAll(
+        PaymentRepositoryLive,
+        OutboxRepositoryLive,
+        SagaLogRepositoryLive
+      ),
+      PgLive
+    )
+  )
+)
 
 const ApiLive = HttpApiBuilder.api(Api)
   .pipe(Layer.provide(ApplicationLayer))

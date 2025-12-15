@@ -17,9 +17,9 @@ import * as http from "node:http"
 import { v7 as uuidv7 } from "uuid"
 import { IdempotencyKey } from "./IdempotencyKey.js"
 import { OrderId } from "./Order.js"
-import { Outbox, OutboxId, OutboxRepository } from "./Outbox.js"
+import { Outbox, OutboxId, OutboxRepository, OutboxRepositoryLive } from "./Outbox.js"
 import { ProductId } from "./Product.js"
-import { SagaLogId, SagaLogRepository } from "./SagaLog.js"
+import { SagaLogId, SagaLogRepository, SagaLogRepositoryLive } from "./SagaLog.js"
 
 export const InventoryId = Schema.UUID.pipe(
   Schema.brand("InventoryId"),
@@ -410,10 +410,18 @@ const PgLive = PgClient.layer({
   transformResultNames: String.snakeToCamel
 })
 
-const ApplicationLayer = Layer.mergeAll(
-  InventoryRepositoryLive,
-  PgLive
-).pipe(Layer.provideMerge(InventoryHttpApiLive))
+const ApplicationLayer = InventoryHttpApiLive.pipe(
+  Layer.provide(
+    Layer.provideMerge(
+      Layer.mergeAll(
+        InventoryRepositoryLive,
+        OutboxRepositoryLive,
+        SagaLogRepositoryLive
+      ),
+      PgLive
+    )
+  )
+)
 
 const ApiLive = HttpApiBuilder.api(Api)
   .pipe(Layer.provide(ApplicationLayer))
