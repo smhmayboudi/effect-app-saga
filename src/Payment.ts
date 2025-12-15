@@ -19,7 +19,7 @@ import { CustomerId } from "./Customer.js"
 import { IdempotencyKey } from "./IdempotencyKey.js"
 import { OrderId } from "./Order.js"
 import { Outbox, OutboxId, OutboxRepository, OutboxRepositoryLive } from "./Outbox.js"
-import { SagaLogId, SagaLogRepository, SagaLogRepositoryLive } from "./SagaLog.js"
+import { SagaLog, SagaLogId, SagaLogRepository, SagaLogRepositoryLive } from "./SagaLog.js"
 
 const PaymentId = Schema.UUID.pipe(
   Schema.brand("PaymentId"),
@@ -208,10 +208,8 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
                 success: true
               }
             }
-
             // Get saga log to track progress
-            const sagaLog = yield* sagaLogRepository.findOne({ sagaLogId })
-
+            let sagaLog = yield* sagaLogRepository.findOne({ sagaLogId })
             if (!sagaLog) {
               console.error(`[Payment Service] SagaLog not found for sagaLogId: ${sagaLogId}`)
               // throw new Error("SagaLog not found")
@@ -220,7 +218,6 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
                 success: false
               }
             }
-
             // Execute payment and outbox write without transaction for now
             // try {
             // Re-fetch sagaLog to ensure we have the latest version
@@ -233,12 +230,9 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
             //     success: false
             //   }
             // }
-
             // Simulate payment processing - randomly succeed or fail for demo
             const shouldFail = Math.random() < 0.1 // 10% failure rate for demo
-
             const status = shouldFail ? "FAILED" : "PROCESSED"
-
             const payment = new Payment({
               id: PaymentId.make(uuidv7()),
               idempotencyKey,
@@ -248,35 +242,54 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
               sagaLogId,
               status
             })
-
             yield* paymentRepository.save(payment)
-
             // Update saga log
-            const paymentStep = sagaLog.steps.find((s) => s.name === "PROCESS_PAYMENT")
-            paymentStep.status = "IN_PROGRESS"
-            paymentStep.timestamp = new Date()
+            // const paymentStep = sagaLog.steps.find((s) => s.name === "PROCESS_PAYMENT")
+            // paymentStep.status = "IN_PROGRESS"
+            // paymentStep.timestamp = new Date()
+            sagaLog = new SagaLog({
+              ...sagaLog,
+              steps: sagaLog.steps.map((step) =>
+                step.name === "PROCESS_PAYMENT"
+                  ? { ...step, status: "IN_PROGRESS", timestamp: new Date() }
+                  : step
+              )
+            })
             yield* sagaLogRepository.save(sagaLog)
 
             if (shouldFail) {
               yield* Console.log(`[Payment Service] Payment failed`)
 
               // Update saga log
-              paymentStep.status = "FAILED"
-              paymentStep.error = "Payment declined"
+              sagaLog = new SagaLog({
+                ...sagaLog,
+                steps: sagaLog.steps.map((step) =>
+                  step.name === "PROCESS_PAYMENT"
+                    ? { ...step, status: "FAILED", error: "Payment declined" }
+                    : step
+                )
+              })
               yield* sagaLogRepository.save(sagaLog)
-
-              throw new Error("Payment declined")
+              // throw new Error("Payment declined")
+              return {
+                error: "Payment declined",
+                message: "Error processing payment",
+                success: false
+              }
             }
-
             yield* Console.log(`[Payment Service] Payment processed`)
-
             // Update saga log
-            paymentStep.status = "COMPLETED"
+            sagaLog = new SagaLog({
+              ...sagaLog,
+              steps: sagaLog.steps.map((step) =>
+                step.name === "PROCESS_PAYMENT"
+                  ? { ...step, status: "COMPLETED" }
+                  : step
+              )
+            })
             yield* sagaLogRepository.save(sagaLog)
-
             // Write inventory event to Outbox
             yield* Console.log(`[Payment Service] Writing inventory event to Outbox`)
-
             const inventoryEventId = OutboxId.make(uuidv7())
             const outboxEntry = new Outbox({
               id: inventoryEventId,
@@ -292,15 +305,12 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
               targetEndpoint: "/inventories/update-inventory",
               isPublished: false
             })
-
             yield* outboxRepository.save(outboxEntry)
             yield* Console.log(`[Payment Service] Inventory event written to Outbox: ${inventoryEventId}`)
-
             return { outboxEntry, payment }
             // } catch (innerError) {
             //   throw innerError
             // }
-
             // return {
             //   message: "Payment processed - inventory event queued",
             //   success: true
@@ -320,7 +330,6 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
                 success: false
               }
             }
-
             // Mark as already refunded if compensation key matches
             if (payment.compensationKey === idempotencyKey) {
               yield* Console.log(`[Payment Service] Payment already refunded with key: ${idempotencyKey}`)
@@ -330,7 +339,6 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
                 success: true
               }
             }
-
             // const updatedPayment = await Payment.findOneAndUpdate(
             //   { _id: payment._id },
             //   {
@@ -345,9 +353,7 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
               compensationKey: idempotencyKey
             })
             payment = yield* paymentRepository.save(payment)
-
             yield* Console.log(`[Payment Service] Payment refunded: ${orderId}`)
-
             return {
               data: payment,
               message: "Payment refunded successfully",
@@ -360,7 +366,6 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
             `[Payment Service] Payment get ${{ paymentId }}`
           )
           const payment = yield* paymentRepository.findOne({ paymentId })
-
           if (!payment) {
             // throw new Error("Payment not found")
             return {
@@ -368,7 +373,6 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
               success: false
             }
           }
-
           return {
             data: payment,
             success: true
