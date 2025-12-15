@@ -17,7 +17,7 @@ import * as http from "node:http"
 import { v7 as uuidv7 } from "uuid"
 import { CustomerId } from "./Customer.js"
 import { IdempotencyKey } from "./IdempotencyKey.js"
-import { Outbox, OutboxId } from "./Outbox.js"
+import { Outbox, OutboxId, OutboxRepository, OutboxRepositoryLive } from "./Outbox.js"
 import { ProductId } from "./Product.js"
 import { SagaLog, SagaLogId, SagaLogRepository, SagaLogRepositoryLive } from "./SagaLog.js"
 
@@ -171,8 +171,8 @@ const OrderHttpApiLive = HttpApiBuilder.group(
   "order",
   (handlers) =>
     Effect.gen(function*() {
-      const sql = yield* SqlClient.SqlClient
       const orderRepository = yield* OrderRepository
+      const outboxRepository = yield* OutboxRepository
       const sagaLogRepository = yield* SagaLogRepository
 
       return handlers.handle(
@@ -195,20 +195,12 @@ const OrderHttpApiLive = HttpApiBuilder.group(
                 success: true
               }
             }
-
             const sagaLogId = SagaLogId.make(uuidv7())
             yield* Console.log(`\n[Order Service] Starting Saga: ${sagaLogId}`)
-
-            // const a = yield* sql.withTransaction(
-            //   Effect.gen(function*() {
-            //     const b = yield* sql`SELECT * FROM x`
-            //     return b
-            //   })
-            // ).pipe(Effect.catchTag("SqlError", Effect.die))
             // Execute all writes in a single transaction
             // const { orderId, paymentEventId } = await withTransaction(async (session) => {
             // Initialize Saga Log with idempotency key
-            const sagaLog = new SagaLog({
+            let sagaLog = new SagaLog({
               customerId,
               idempotencyKey,
               productId,
@@ -247,9 +239,7 @@ const OrderHttpApiLive = HttpApiBuilder.group(
               ],
               totalPrice
             })
-
             yield* sagaLogRepository.save(sagaLog)
-
             // Step 1: Create Order
             yield* Console.log(`[Order Service] Executing Step 1: CREATE_ORDER`)
             const orderId = OrderId.make(uuidv7())
@@ -262,20 +252,21 @@ const OrderHttpApiLive = HttpApiBuilder.group(
               sagaLogId,
               status: "CONFIRMED"
             })
-
             yield* orderRepository.save(order)
             yield* Console.log(`[Order Service] Order created: ${orderId}`)
-
             // Update saga log
-            const orderStep = sagaLog.steps.find((s) => s.name === "CREATE_ORDER")
-            orderStep.status = "COMPLETED"
-            orderStep.timestamp = new Date()
-            sagaLog.orderId = orderId
-            await sagaLog.save({ session })
-
+            sagaLog = new SagaLog({
+              ...sagaLog,
+              orderId,
+              steps: sagaLog.steps.map((step) =>
+                step.name === "CREATE_ORDER"
+                  ? { ...step, status: "COMPLETED", timestamp: new Date() }
+                  : step
+              )
+            })
+            sagaLog = yield* sagaLogRepository.save(sagaLog)
             // Write payment event to Outbox
-            // yield* Console.log(`[Order Service] Writing payment event to Outbox`)
-
+            yield* Console.log(`[Order Service] Writing payment event to Outbox`)
             const paymentEventId = OutboxId.make(uuidv7())
             const outboxEntry = new Outbox({
               id: paymentEventId,
@@ -291,20 +282,20 @@ const OrderHttpApiLive = HttpApiBuilder.group(
               targetEndpoint: "/payments/process-payment",
               isPublished: false
             })
-
-            await outboxEntry.save({ session })
+            yield* outboxRepository.save(outboxEntry)
             yield* Console.log(`[Order Service] Payment event written to Outbox: ${paymentEventId}`)
-
             // Update saga log
-            const paymentStep = sagaLog.steps.find((s) => s.name === "PROCESS_PAYMENT")
-            paymentStep.status = "PENDING"
-            paymentStep.timestamp = new Date()
-            // await sagaLog.save({ session })
-            yield* sagaLogRepository.save(sagaLog)
-
+            sagaLog = new SagaLog({
+              ...sagaLog,
+              steps: sagaLog.steps.map((step) =>
+                step.name === "PROCESS_PAYMENT"
+                  ? { ...step, status: "PENDING", timestamp: new Date() }
+                  : step
+              )
+            })
+            sagaLog = yield* sagaLogRepository.save(sagaLog)
             // return { orderId, paymentEventId }
             // })
-
             return {
               message: "Order saga initiated successfully - events queued for processing",
               orderId,
@@ -330,13 +321,11 @@ const OrderHttpApiLive = HttpApiBuilder.group(
                 success: false
               }
             }
-
             order = new Order({
               ...order,
               status: "COMPENSATED"
             })
             yield* orderRepository.save(order)
-
             yield* Console.log(`[Order Service] Order compensated: ${orderId}`)
 
             return {
@@ -351,7 +340,6 @@ const OrderHttpApiLive = HttpApiBuilder.group(
             `[Order Service] Order get ${{ orderId }}`
           )
           const order = yield* orderRepository.findOne({ orderId })
-
           if (!order) {
             // throw new Error("Order not found")
             return {
@@ -379,6 +367,7 @@ const ApplicationLayer = OrderHttpApiLive.pipe(
     Layer.provideMerge(
       Layer.mergeAll(
         OrderRepositoryLive,
+        OutboxRepositoryLive,
         SagaLogRepositoryLive
       ),
       PgLive
