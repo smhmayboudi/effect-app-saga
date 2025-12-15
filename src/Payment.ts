@@ -10,14 +10,16 @@ import {
 import { NodeHttpServer, NodeRuntime } from "@effect/platform-node"
 import * as HttpApiScalar from "@effect/platform/HttpApiScalar"
 import * as HttpApiSwagger from "@effect/platform/HttpApiSwagger"
-import { Console, Effect, flow, Layer, Logger, LogLevel, Schema } from "effect"
+import { SqlClient } from "@effect/sql"
+import { PgClient } from "@effect/sql-pg"
+import { Console, Context, Effect, flow, Layer, Logger, LogLevel, Schema, String } from "effect"
 import * as http from "node:http"
 import { v7 as uuidv7 } from "uuid"
 import { CustomerId } from "./Customer.js"
 import { IdempotencyKey } from "./IdempotencyKey.js"
 import { OrderId } from "./Order.js"
 import { EventId, Outbox, OutboxRepository } from "./Outbox.js"
-import { SagaLog, SagaLogId, SagaLogRepository } from "./SagaLog.js"
+import { SagaLogId, SagaLogRepository } from "./SagaLog.js"
 
 const PaymentId = Schema.UUID.pipe(
   Schema.brand("PaymentId"),
@@ -26,11 +28,12 @@ const PaymentId = Schema.UUID.pipe(
 type PaymentId = typeof PaymentId.Type
 
 const PaymentSchema = Schema.Struct({
+  id: PaymentId,
   amount: Schema.Number.annotations({ description: "Amount" }),
+  compensationKey: Schema.optionalWith(Schema.NullOr(IdempotencyKey), { default: () => null }),
   customerId: CustomerId,
   idempotencyKey: IdempotencyKey,
   orderId: OrderId,
-  paymentId: PaymentId,
   sagaLogId: SagaLogId,
   status: Schema.optionalWith(
     Schema.Literal("PENDING", "PROCESSED", "FAILED", "REFUNDED"),
@@ -47,6 +50,82 @@ type PaymentSchema = typeof PaymentSchema.Type
 class Payment extends Schema.Class<Payment>("Payment")(PaymentSchema) {
   static decodeUnknown = Schema.decodeUnknown(Payment)
 }
+
+class PaymentRepository extends Context.Tag("@context/PaymentRepository")<
+  PaymentRepository,
+  {
+    readonly findOne: (options: {
+      idempotencyKey?: IdempotencyKey
+      orderSagaLog?: {
+        orderId: OrderId
+        sagaLogId: SagaLogId
+      }
+      paymentId?: PaymentId
+    }) => Effect.Effect<Payment>
+    readonly save: (data: Payment) => Effect.Effect<Payment>
+  }
+>() {}
+
+const PaymentRepositoryLive = Layer.effect(
+  PaymentRepository,
+  Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+
+    yield* sql`
+CREATE TYPE payment_status AS ENUM ('PENDING', 'PROCESSED', 'FAILED', 'REFUNDED');
+    `
+    yield* sql`
+CREATE TABLE tbl_payment (
+    id UUID PRIMARY KEY,
+    amount DECIMAL(15,2) NOT NULL CHECK (amount > 0),
+    compensation_key UUID,
+    customer_id UUID NOT NULL,
+    idempotency_key UUID NOT NULL,
+    order_id UUID NOT NULL,
+    saga_log_id UUID NOT NULL,
+    status payment_status NOT NULL DEFAULT 'PENDING',
+
+    INDEX idx_payments_order_id_saga_log_id ON (order_id, saga_log_id),
+    INDEX idx_payments_idempotency_key ON (idempotency_key)
+);
+    `
+
+    return {
+      findOne: ({ idempotencyKey, orderSagaLog, paymentId }) =>
+        (idempotencyKey ?
+          sql`SELECT * FROM tbl_payment WHERE idempotency_key = ${idempotencyKey} LIMIT 1` :
+          orderSagaLog ?
+          sql`SELECT * FROM tbl_payment WHERE order_id = ${orderSagaLog.orderId} AND saga_log_id = ${orderSagaLog.sagaLogId} LIMIT 1` :
+          paymentId ?
+          sql`SELECT * FROM tbl_payment WHERE id = ${paymentId} LIMIT 1` :
+          sql`SELECT * FROM tbl_payment LIMIT 1`).pipe(
+            Effect.catchTag("SqlError", Effect.die),
+            Effect.flatMap((rows) => Effect.succeed(rows[0])),
+            Effect.flatMap((row) => Payment.decodeUnknown(row)),
+            Effect.catchTag("ParseError", Effect.die)
+          ),
+      save: (data) =>
+        sql`
+INSERT INTO tbl_payment ${sql.insert({ ...data })}
+ON CONFLICT (id) 
+DO UPDATE SET
+    amount = EXCLUDED.amount,
+    compensation_key = EXCLUDED.compensation_key,
+    customer_id = EXCLUDED.customer_id,
+    idempotency_key = EXCLUDED.idempotency_key,
+    order_id = EXCLUDED.order_id,
+    saga_log_id = EXCLUDED.saga_log_id,
+    status = EXCLUDED.status
+RETURNING *;
+`.pipe(
+          Effect.catchTag("SqlError", Effect.die),
+          Effect.flatMap((rows) => Effect.succeed(rows[0])),
+          Effect.flatMap((row) => Payment.decodeUnknown(row)),
+          Effect.catchTag("ParseError", Effect.die)
+        )
+    }
+  })
+)
 
 const PaymentProcessRequest = Schema.Struct({
   amount: Schema.Number.annotations({ description: "Amount" }),
@@ -109,6 +188,7 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
   (handlers) =>
     Effect.gen(function*() {
       const outboxRepository = yield* OutboxRepository
+      const paymentRepository = yield* PaymentRepository
       const sagaLogRepository = yield* SagaLogRepository
 
       return handlers.handle(
@@ -119,7 +199,7 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
               `[Payment Service] Payment start ${{ idempotencyKey, amount, customerId, orderId, sagaLogId }}`
             )
             // Check if payment already processed
-            const existingPayment = await Payment.findOne({ idempotencyKey })
+            const existingPayment = yield* paymentRepository.findOne({ idempotencyKey })
             if (existingPayment) {
               yield* Console.log(`[Payment Service] Payment already processed with key: ${idempotencyKey}`)
               return {
@@ -160,7 +240,7 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
             const status = shouldFail ? "FAILED" : "PROCESSED"
 
             const payment = new Payment({
-              paymentId: PaymentId.make(uuidv7()),
+              id: PaymentId.make(uuidv7()),
               idempotencyKey,
               orderId,
               customerId,
@@ -169,7 +249,7 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
               status
             })
 
-            await payment.save()
+            yield* paymentRepository.save(payment)
 
             // Update saga log
             const paymentStep = sagaLog.steps.find((s) => s.stepName === "PROCESS_PAYMENT")
@@ -231,7 +311,7 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
         ({ headers: { "idempotency-key": idempotencyKey }, payload: { orderId, sagaLogId } }) =>
           Effect.gen(function*() {
             yield* Console.log(`[Payment Service] Payment refund ${{ idempotencyKey, orderId, sagaLogId }}`)
-            const payment = await Payment.findOne({ orderId, sagaLogId })
+            let payment = yield* paymentRepository.findOne({ orderSagaLog: { orderId, sagaLogId } })
 
             if (!payment) {
               // throw new Error("Payment not found")
@@ -244,26 +324,32 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
             // Mark as already refunded if compensation key matches
             if (payment.compensationKey === idempotencyKey) {
               yield* Console.log(`[Payment Service] Payment already refunded with key: ${idempotencyKey}`)
-              return res.status(200).json({
+              return {
                 data: payment,
                 message: "Payment already refunded",
                 success: true
-              })
+              }
             }
 
-            const updatedPayment = await Payment.findOneAndUpdate(
-              { _id: payment._id },
-              {
-                status: "REFUNDED",
-                compensationKey: idempotencyKey
-              },
-              { new: true }
-            )
+            // const updatedPayment = await Payment.findOneAndUpdate(
+            //   { _id: payment._id },
+            //   {
+            //     status: "REFUNDED",
+            //     compensationKey: idempotencyKey
+            //   },
+            //   { new: true }
+            // )
+            payment = new Payment({
+              ...payment,
+              status: "REFUNDED",
+              compensationKey: idempotencyKey
+            })
+            payment = yield* paymentRepository.save(payment)
 
             yield* Console.log(`[Payment Service] Payment refunded: ${orderId}`)
 
             return {
-              data: updatedPayment,
+              data: payment,
               message: "Payment refunded successfully",
               success: true
             }
@@ -273,7 +359,7 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
           yield* Console.log(
             `[Payment Service] Payment get ${{ paymentId }}`
           )
-          const payment = await Payment.findOne({ paymentId })
+          const payment = yield* paymentRepository.findOne({ paymentId })
 
           if (!payment) {
             // throw new Error("Payment not found")
@@ -291,8 +377,19 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
     })
 )
 
+const PgLive = PgClient.layer({
+  database: "effect_pg_dev",
+  transformQueryNames: String.camelToSnake,
+  transformResultNames: String.snakeToCamel
+})
+
+const ApplicationLayer = Layer.mergeAll(
+  PaymentRepositoryLive,
+  PgLive
+).pipe(Layer.provideMerge(PaymentHttpApiLive))
+
 const ApiLive = HttpApiBuilder.api(Api)
-  .pipe(Layer.provide(PaymentHttpApiLive))
+  .pipe(Layer.provide(ApplicationLayer))
 
 const gracefulShutdown = <A, E, R>(layer: Layer.Layer<A, E, R>) =>
   Layer.scopedDiscard(
