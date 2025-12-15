@@ -51,7 +51,7 @@ export class Outbox extends Schema.Class<Outbox>("Outbox")(OutboxSchema) {
   static decodeUnknown = Schema.decodeUnknown(Outbox)
 }
 
-class OutboxRepository extends Context.Tag("@context/OutboxRepository")<
+export class OutboxRepository extends Context.Tag("@context/OutboxRepository")<
   OutboxRepository,
   {
     readonly findUnpublished: (options: {
@@ -61,7 +61,7 @@ class OutboxRepository extends Context.Tag("@context/OutboxRepository")<
   }
 >() {}
 
-const OutboxRepositoryLive = Layer.effect(
+export const OutboxRepositoryLive = Layer.effect(
   OutboxRepository,
   Effect.gen(function*() {
     const sql = yield* SqlClient.SqlClient

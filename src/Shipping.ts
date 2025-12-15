@@ -156,14 +156,14 @@ const ShippingHttpApiLive = HttpApiBuilder.group(
             if (shippingStep) {
               shippingStep.status = "IN_PROGRESS"
               shippingStep.timestamp = new Date()
-              await sagaLog.save()
+              yield* sagaLogRepository.save(sagaLog)
 
               yield* Console.log(`[Shipping Service] Order delivered: ${orderId}`)
 
               // Mark saga as completed
               shippingStep.status = "COMPLETED"
               sagaLog.status = "COMPLETED"
-              await sagaLog.save()
+              yield* sagaLogRepository.save(sagaLog)
 
               yield* Console.log(`[Shipping Service] Saga COMPLETED: ${sagaLogId}\n`)
             } else {

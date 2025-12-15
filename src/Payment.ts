@@ -16,7 +16,7 @@ import { v7 as uuidv7 } from "uuid"
 import { CustomerId } from "./Customer.js"
 import { IdempotencyKey } from "./IdempotencyKey.js"
 import { OrderId } from "./Order.js"
-import { EventId, Outbox } from "./Outbox.js"
+import { EventId, Outbox, OutboxRepository } from "./Outbox.js"
 import { SagaLog, SagaLogId, SagaLogRepository } from "./SagaLog.js"
 
 const PaymentId = Schema.UUID.pipe(
@@ -108,6 +108,7 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
   "payment",
   (handlers) =>
     Effect.gen(function*() {
+      const outboxRepository = yield* OutboxRepository
       const sagaLogRepository = yield* SagaLogRepository
 
       return handlers.handle(
@@ -174,7 +175,7 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
             const paymentStep = sagaLog.steps.find((s) => s.stepName === "PROCESS_PAYMENT")
             paymentStep.status = "IN_PROGRESS"
             paymentStep.timestamp = new Date()
-            await sagaLog.save()
+            yield* sagaLogRepository.save(sagaLog)
 
             if (shouldFail) {
               yield* Console.log(`[Payment Service] Payment failed`)
@@ -182,7 +183,7 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
               // Update saga log
               paymentStep.status = "FAILED"
               paymentStep.error = "Payment declined"
-              await sagaLog.save()
+              yield* sagaLogRepository.save(sagaLog)
 
               throw new Error("Payment declined")
             }
@@ -191,7 +192,7 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
 
             // Update saga log
             paymentStep.status = "COMPLETED"
-            await sagaLog.save()
+            yield* sagaLogRepository.save(sagaLog)
 
             // Write inventory event to Outbox
             yield* Console.log(`[Payment Service] Writing inventory event to Outbox`)
@@ -212,7 +213,7 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
               isPublished: false
             })
 
-            await outboxEntry.save()
+            yield* outboxRepository.save(outboxEntry)
             yield* Console.log(`[Payment Service] Inventory event written to Outbox: ${inventoryEventId}`)
 
             return { outboxEntry, payment }
