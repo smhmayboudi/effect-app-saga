@@ -10,12 +10,14 @@ import {
 import { NodeHttpServer, NodeRuntime } from "@effect/platform-node"
 import * as HttpApiScalar from "@effect/platform/HttpApiScalar"
 import * as HttpApiSwagger from "@effect/platform/HttpApiSwagger"
-import { Console, Effect, flow, Layer, Logger, LogLevel, Schema } from "effect"
+import { SqlClient } from "@effect/sql"
+import { PgClient } from "@effect/sql-pg"
+import { Console, Context, Effect, flow, Layer, Logger, LogLevel, Schema, String } from "effect"
 import * as http from "node:http"
 import { v7 as uuidv7 } from "uuid"
 import { CustomerId } from "./Customer.js"
 import { IdempotencyKey } from "./IdempotencyKey.js"
-import { EventId, Outbox } from "./Outbox.js"
+import { Outbox, OutboxId } from "./Outbox.js"
 import { ProductId } from "./Product.js"
 import { SagaLog, SagaLogId, SagaLogRepository } from "./SagaLog.js"
 
@@ -26,8 +28,8 @@ export const OrderId = Schema.UUID.pipe(
 export type OrderId = typeof OrderId.Type
 
 const OrderSchema = Schema.Struct({
+  id: OrderId,
   customerId: CustomerId,
-  orderId: OrderId,
   productId: ProductId,
   quantity: Schema.Number.annotations({ description: "Quantity" }),
   sagaLogId: SagaLogId,
@@ -47,6 +49,68 @@ type OrderSchema = typeof OrderSchema.Type
 class Order extends Schema.Class<Order>("Order")(OrderSchema) {
   static decodeUnknown = Schema.decodeUnknown(Order)
 }
+
+class OrderRepository extends Context.Tag("@context/OrderRepository")<
+  OrderRepository,
+  {
+    readonly findOne: (options: {
+      orderId?: OrderId
+    }) => Effect.Effect<Order>
+    readonly save: (data: Order) => Effect.Effect<Order>
+  }
+>() {}
+
+const OrderRepositoryLive = Layer.effect(
+  OrderRepository,
+  Effect.gen(function*() {
+    const sql = yield* SqlClient.SqlClient
+
+    yield* sql`
+CREATE TYPE order_status AS ENUM ('PENDING', 'CONFIRMED', 'FAILED', 'COMPENSATED');
+    `
+    yield* sql`
+CREATE TABLE orders (
+    id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    customer_id UUID NOT NULL,
+    product_id UUID NOT NULL,
+    quantity INTEGER NOT NULL CHECK (quantity > 0),
+    saga_log_id UUID NOT NULL,
+    status order_status NOT NULL DEFAULT 'PENDING',
+    total_price DECIMAL(10, 2) NOT NULL CHECK (total_price >= 0)
+);
+    `
+
+    return {
+      findOne: ({ orderId }) =>
+        (orderId ?
+          sql`SELECT * FROM tbl_order WHERE id = ${orderId} LIMIT 1` :
+          sql`SELECT * FROM tbl_order LIMIT 1`).pipe(
+            Effect.catchTag("SqlError", Effect.die),
+            Effect.flatMap((rows) => Effect.succeed(rows[0])),
+            Effect.flatMap((row) => Order.decodeUnknown(row)),
+            Effect.catchTag("ParseError", Effect.die)
+          ),
+      save: (data) =>
+        sql`
+INSERT INTO tbl_order ${sql.insert({ ...data })}
+ON CONFLICT (id) 
+DO UPDATE SET
+    customer_id = EXCLUDED.customer_id,
+    product_id = EXCLUDED.product_id,
+    quantity = EXCLUDED.quantity,
+    saga_log_id = EXCLUDED.saga_log_id,
+    status = EXCLUDED.status,
+    total_price = EXCLUDED.total_price
+RETURNING *;
+`.pipe(
+          Effect.catchTag("SqlError", Effect.die),
+          Effect.flatMap((rows) => Effect.succeed(rows[0])),
+          Effect.flatMap((row) => Order.decodeUnknown(row)),
+          Effect.catchTag("ParseError", Effect.die)
+        )
+    }
+  })
+)
 
 const OrderStartRequest = Schema.Struct({
   customerId: CustomerId,
@@ -105,68 +169,79 @@ const Api = HttpApi.make("api")
 const OrderHttpApiLive = HttpApiBuilder.group(
   Api,
   "order",
-  (handlers) => Effect.gen(function*() {
-    const sagaLogRepository = yield* SagaLogRepository
+  (handlers) =>
+    Effect.gen(function*() {
+      const sql = yield* SqlClient.SqlClient
+      const orderRepository = yield* OrderRepository
+      const sagaLogRepository = yield* SagaLogRepository
 
-    return handlers.handle(
-      "start",
-      ({ headers: { "idempotency-key": idempotencyKey }, payload: { customerId, productId, quantity, totalPrice } }) =>
-        Effect.gen(function*() {
-          yield* Console.log(
-            `[Order Service] Order start ${{ idempotencyKey, customerId, productId, quantity, totalPrice }}`
-          )
-          // Check if this saga was already started with this idempotency key })
-          const existingSaga = yield* sagaLogRepository.findOne({ idempotencyKey })
-          if (existingSaga) {
-            yield* Console.log(`[Order Service] Saga already processed with key: ${idempotencyKey}`)
-            return {
-              message: "Saga already initiated",
-              orderId: existingSaga.orderId,
-              sagaLogId: existingSaga.sagaLogId,
-              success: true
+      return handlers.handle(
+        "start",
+        (
+          { headers: { "idempotency-key": idempotencyKey }, payload: { customerId, productId, quantity, totalPrice } }
+        ) =>
+          Effect.gen(function*() {
+            yield* Console.log(
+              `[Order Service] Order start ${{ idempotencyKey, customerId, productId, quantity, totalPrice }}`
+            )
+            // Check if this saga was already started with this idempotency key })
+            const existingSaga = yield* sagaLogRepository.findOne({ idempotencyKey })
+            if (existingSaga) {
+              yield* Console.log(`[Order Service] Saga already processed with key: ${idempotencyKey}`)
+              return {
+                message: "Saga already initiated",
+                orderId: existingSaga.orderId,
+                sagaLogId: existingSaga.id,
+                success: true
+              }
             }
-          }
 
-          const sagaLogId = SagaLogId.make(uuidv7())
-          yield* Console.log(`\n[Order Service] Starting Saga: ${sagaLogId}`)
+            const sagaLogId = SagaLogId.make(uuidv7())
+            yield* Console.log(`\n[Order Service] Starting Saga: ${sagaLogId}`)
 
-          // Execute all writes in a single transaction
-          const { orderId, paymentEventId } = await withTransaction(async (session) => {
+            // const a = yield* sql.withTransaction(
+            //   Effect.gen(function*() {
+            //     const b = yield* sql`SELECT * FROM x`
+            //     return b
+            //   })
+            // ).pipe(Effect.catchTag("SqlError", Effect.die))
+            // Execute all writes in a single transaction
+            // const { orderId, paymentEventId } = await withTransaction(async (session) => {
             // Initialize Saga Log with idempotency key
             const sagaLog = new SagaLog({
               customerId,
               idempotencyKey,
               productId,
               quantity,
-              sagaLogId,
+              id: sagaLogId,
               status: "STARTED",
               steps: [
                 {
                   compensationStatus: "PENDING",
                   error: null,
                   status: "PENDING",
-                  stepName: "CREATE_ORDER",
+                  name: "CREATE_ORDER",
                   timestamp: null
                 },
                 {
                   compensationStatus: "PENDING",
                   error: null,
                   status: "PENDING",
-                  stepName: "PROCESS_PAYMENT",
+                  name: "PROCESS_PAYMENT",
                   timestamp: null
                 },
                 {
                   compensationStatus: "PENDING",
                   error: null,
                   status: "PENDING",
-                  stepName: "UPDATE_INVENTORY",
+                  name: "UPDATE_INVENTORY",
                   timestamp: null
                 },
                 {
                   compensationStatus: "PENDING",
                   error: null,
                   status: "PENDING",
-                  stepName: "DELIVER_ORDER",
+                  name: "DELIVER_ORDER",
                   timestamp: null
                 }
               ],
@@ -174,13 +249,12 @@ const OrderHttpApiLive = HttpApiBuilder.group(
             })
 
             yield* sagaLogRepository.save(sagaLog)
-            // await sagaLog.save({ session })
 
             // Step 1: Create Order
             yield* Console.log(`[Order Service] Executing Step 1: CREATE_ORDER`)
             const orderId = OrderId.make(uuidv7())
             const order = new Order({
-              orderId,
+              id: orderId,
               customerId,
               productId,
               quantity,
@@ -189,11 +263,11 @@ const OrderHttpApiLive = HttpApiBuilder.group(
               status: "CONFIRMED"
             })
 
-            await order.save({ session })
+            yield* orderRepository.save(order)
             yield* Console.log(`[Order Service] Order created: ${orderId}`)
 
             // Update saga log
-            const orderStep = sagaLog.steps.find((s) => s.stepName === "CREATE_ORDER")
+            const orderStep = sagaLog.steps.find((s) => s.name === "CREATE_ORDER")
             orderStep.status = "COMPLETED"
             orderStep.timestamp = new Date()
             sagaLog.orderId = orderId
@@ -202,9 +276,9 @@ const OrderHttpApiLive = HttpApiBuilder.group(
             // Write payment event to Outbox
             // yield* Console.log(`[Order Service] Writing payment event to Outbox`)
 
-            const paymentEventId = EventId.make(uuidv7())
+            const paymentEventId = OutboxId.make(uuidv7())
             const outboxEntry = new Outbox({
-              eventId: paymentEventId,
+              id: paymentEventId,
               aggregateId: orderId,
               eventType: "OrderCreated",
               payload: {
@@ -222,31 +296,61 @@ const OrderHttpApiLive = HttpApiBuilder.group(
             yield* Console.log(`[Order Service] Payment event written to Outbox: ${paymentEventId}`)
 
             // Update saga log
-            const paymentStep = sagaLog.steps.find((s) => s.stepName === "PROCESS_PAYMENT")
+            const paymentStep = sagaLog.steps.find((s) => s.name === "PROCESS_PAYMENT")
             paymentStep.status = "PENDING"
             paymentStep.timestamp = new Date()
-            await sagaLog.save({ session })
+            // await sagaLog.save({ session })
+            yield* sagaLogRepository.save(sagaLog)
 
-            return { orderId, paymentEventId }
+            // return { orderId, paymentEventId }
+            // })
+
+            return {
+              message: "Order saga initiated successfully - events queued for processing",
+              orderId,
+              sagaLogId,
+              success: true
+            }
           })
+      ).handle(
+        "compensate",
+        ({ payload: { orderId } }) =>
+          Effect.gen(function*() {
+            yield* Console.log(`[Order Service] Order compensate ${{ orderId }}`)
+            // const order = await Order.findOneAndUpdate(
+            //   { orderId },
+            //   { status: "COMPENSATED" },
+            //   { new: true }
+            // )
+            let order = yield* orderRepository.findOne({ orderId })
+            if (!order) {
+              // throw new Error("Order not found")
+              return {
+                message: "Order not found",
+                success: false
+              }
+            }
 
-          return {
-            message: "Order saga initiated successfully - events queued for processing",
-            orderId,
-            sagaLogId,
-            success: true
-          }
-        })
-    ).handle(
-      "compensate",
-      ({ payload: { orderId } }) =>
+            order = new Order({
+              ...order,
+              status: "COMPENSATED"
+            })
+            yield* orderRepository.save(order)
+
+            yield* Console.log(`[Order Service] Order compensated: ${orderId}`)
+
+            return {
+              data: order,
+              message: "Order compensated successfully",
+              success: true
+            }
+          })
+      ).handle("get", ({ path: { orderId } }) =>
         Effect.gen(function*() {
-          yield* Console.log(`[Order Service] Order compensate ${{ orderId }}`)
-          const order = await Order.findOneAndUpdate(
-            { orderId },
-            { status: "COMPENSATED" },
-            { new: true }
+          yield* Console.log(
+            `[Order Service] Order get ${{ orderId }}`
           )
+          const order = yield* orderRepository.findOne({ orderId })
 
           if (!order) {
             // throw new Error("Order not found")
@@ -256,39 +360,27 @@ const OrderHttpApiLive = HttpApiBuilder.group(
             }
           }
 
-          yield* Console.log(`[Order Service] Order compensated: ${orderId}`)
-
           return {
             data: order,
-            message: "Order compensated successfully",
             success: true
           }
-        })
-    ).handle("get", ({ path: { orderId } }) =>
-      Effect.gen(function*() {
-        yield* Console.log(
-          `[Order Service] Order get ${{ orderId }}`
-        )
-        const order = await Order.findOne({ orderId })
-
-        if (!order) {
-          // throw new Error("Order not found")
-          return {
-            message: "Order not found",
-            success: false
-          }
-        }
-
-        return {
-          data: order,
-          success: true
-        }
-      }))
-  })
+        }))
+    })
 )
 
+const PgLive = PgClient.layer({
+  database: "effect_pg_dev",
+  transformQueryNames: String.camelToSnake,
+  transformResultNames: String.snakeToCamel
+})
+
+const ApplicationLayer = Layer.mergeAll(
+  OrderRepositoryLive,
+  PgLive
+).pipe(Layer.provideMerge(OrderHttpApiLive))
+
 const ApiLive = HttpApiBuilder.api(Api)
-  .pipe(Layer.provide(OrderHttpApiLive))
+  .pipe(Layer.provide(ApplicationLayer))
 
 const gracefulShutdown = <A, E, R>(layer: Layer.Layer<A, E, R>) =>
   Layer.scopedDiscard(
