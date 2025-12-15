@@ -5,15 +5,15 @@ import type { Fiber } from "effect"
 import { Config, Console, Context, Duration, Effect, Layer, Schedule, Schema, String } from "effect"
 import { OrderId } from "./Order.js"
 
-export const EventId = Schema.UUID.pipe(
-  Schema.brand("EventId"),
-  Schema.annotations({ description: "Event Identification" })
+export const OutboxId = Schema.UUID.pipe(
+  Schema.brand("OutboxId"),
+  Schema.annotations({ description: "Outbox Identification" })
 )
-export type EventId = typeof EventId.Type
+export type OutboxId = typeof OutboxId.Type
 
 const OutboxSchema = Schema.Struct({
+  id: OutboxId,
   aggregateId: OrderId,
-  eventId: EventId,
   eventType: Schema.Literal(
     "OrderCreated",
     "PaymentProcessed",
@@ -67,46 +67,27 @@ export const OutboxRepositoryLive = Layer.effect(
     const sql = yield* SqlClient.SqlClient
 
     yield* sql`
+CREATE TYPE outbox_event_type AS ENUM ('OrderCreated', 'PaymentProcessed', 'PaymentFailed', 'InventoryUpdated', 'InventoryFailed', 'OrderShipped', 'OrderDelivered', 'OrderCompensated');
+    `
+    yield* sql`
+CREATE TYPE outbox_target_service AS ENUM ('payment', 'inventory', 'shipping', 'order');
+    `
+    yield* sql`
 CREATE TABLE tbl_outbox (
-    -- Primary key
-    id SERIAL PRIMARY KEY,
-    
-    -- Required fields
-    aggregate_id UUID NOT NULL,  -- Assuming OrderId is also UUID
-    event_id UUID NOT NULL,
-    event_type VARCHAR(50) NOT NULL 
-        CHECK (eventType IN (
-            'OrderCreated',
-            'PaymentProcessed',
-            'PaymentFailed',
-            'InventoryUpdated',
-            'InventoryFailed',
-            'OrderShipped',
-            'OrderDelivered',
-            'OrderCompensated'
-        )),
-    payload JSONB NOT NULL,  -- or JSON, depending on your DB
-    target_endpoint VARCHAR(255) NOT NULL,
-    target_service VARCHAR(50) NOT NULL 
-        CHECK (target_service IN ('payment', 'inventory', 'shipping', 'order')),
-    
-    -- Optional fields with defaults
+    id UUID PRIMARY KEY,
+    aggregate_id UUID NOT NULL,
+    event_type outbox_event_type NOT NULL,
     is_published BOOLEAN NOT NULL DEFAULT FALSE,
     last_error TEXT,
     max_retries INTEGER NOT NULL DEFAULT 3,
+    payload JSONB NOT NULL,
     publish_attempts INTEGER NOT NULL DEFAULT 0,
     published_at TIMESTAMP WITH TIME ZONE,
+    target_endpoint VARCHAR(255) NOT NULL,
+    target_service outbox_target_service NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    
-    -- Indexes for better performance
-    INDEX idx_outbox_is_published (is_pblished),
-    INDEX idx_outbox_target_service (target_service),
-    INDEX idx_outbox_created_at (created_at),
-    INDEX idx_outbox_event_type (event_type),
-    INDEX idx_outbox_unpublished_service (target_service, is_published) WHERE is_published = FALSE,
-    
-    -- Unique constraint
-    CONSTRAINT uq_outbox_event_id UNIQUE (event_id)
+
+    INDEX idx_outbox_is_pblished (is_pblished) WHERE is_published = FALSE
 );
     `
 
@@ -135,7 +116,7 @@ class ConfigService extends Context.Tag("@context/ConfigService")<
     readonly maxRetries: number
     readonly pollIntervalMs: number
     readonly requestTimeoutMs: number
-    readonly serviceUrls: Record<ServiceSchema["targetService"], string>
+    readonly serviceUrls: Record<OutboxSchema["targetService"], string>
   }
 >() {}
 
@@ -180,9 +161,9 @@ const ConfigServiceLive = Layer.effect(
 )
 
 const buildTargetUrl = (
-  service: ServiceSchema["targetService"],
+  service: OutboxSchema["targetService"],
   endpoint: string,
-  serviceUrls: Record<ServiceSchema["targetService"], string>
+  serviceUrls: Record<OutboxSchema["targetService"], string>
 ): Effect.Effect<string, Error> => {
   const baseUrl = serviceUrls[service]
   if (!baseUrl) {
@@ -198,7 +179,7 @@ const publishSingleEvent = (event: Outbox) =>
     const repository = yield* OutboxRepository
 
     yield* Console.info(
-      `Publishing event: ${event.eventType} with ID: ${event.eventId}`
+      `Publishing event: ${event.eventType} with ID: ${event.id}`
     )
 
     const targetUrl = yield* buildTargetUrl(
@@ -229,7 +210,7 @@ const publishSingleEvent = (event: Outbox) =>
     })
 
     yield* repository.save(newEvent)
-    yield* Console.info(`Event isPublished successfully: ${event.eventId}`)
+    yield* Console.info(`Event isPublished successfully: ${event.id}`)
   }).pipe(
     Effect.catchAll((error) =>
       Effect.gen(function*() {
@@ -237,7 +218,7 @@ const publishSingleEvent = (event: Outbox) =>
         const repository = yield* OutboxRepository
 
         yield* Console.error(
-          `Failed to publish event ${event.eventId}: ${error.message}`
+          `Failed to publish event ${event.id}: ${error.message}`
         )
 
         const newEvent = Outbox.make({
@@ -247,7 +228,7 @@ const publishSingleEvent = (event: Outbox) =>
         })
 
         if (newEvent.publishAttempts >= config.maxRetries) {
-          yield* Console.warn(`Event ${event.eventId} exhausted all retries`)
+          yield* Console.warn(`Event ${event.id} exhausted all retries`)
           const newEvent2 = Outbox.make({
             ...newEvent,
             isPublished: false

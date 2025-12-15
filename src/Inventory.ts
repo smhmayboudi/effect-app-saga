@@ -17,7 +17,7 @@ import * as http from "node:http"
 import { v7 as uuidv7 } from "uuid"
 import { IdempotencyKey } from "./IdempotencyKey.js"
 import { OrderId } from "./Order.js"
-import { EventId, Outbox, OutboxRepository } from "./Outbox.js"
+import { Outbox, OutboxId, OutboxRepository } from "./Outbox.js"
 import { ProductId } from "./Product.js"
 import { SagaLogId, SagaLogRepository } from "./SagaLog.js"
 
@@ -29,14 +29,9 @@ export type InventoryId = typeof InventoryId.Type
 
 const InventorySchemaStruct = Schema.Struct({
   id: InventoryId,
-  compensationOrder: Schema.optionalWith(
-    Schema.NullOr(Schema.Struct({
-      compensationKey: IdempotencyKey,
-      orderId: OrderId
-    })),
-    { default: () => null }
-  ),
+  compensationKey: Schema.optionalWith(Schema.NullOr(IdempotencyKey), { default: () => null }),
   lastIdempotencyKey: Schema.optionalWith(Schema.NullOr(IdempotencyKey), { default: () => null }),
+  orderId: Schema.optionalWith(Schema.NullOr(OrderId), { default: () => null }),
   productId: Schema.optionalWith(Schema.NullOr(ProductId), { default: () => null }),
   quantity: Schema.Number.annotations({ description: "Quantity" }),
   reservedQuantity: Schema.optionalWith(Schema.Number.annotations({ description: "Reserved Quantity" }), {
@@ -75,33 +70,20 @@ const InventoryRepositoryLive = Layer.effect(
     const sql = yield* SqlClient.SqlClient
 
     yield* sql`
--- Create Inventory table without foreign key constraints
 CREATE TABLE tbl_inventory (
-    -- Primary key
     id UUID PRIMARY KEY,
-    
-    -- compensationOrder nested fields
     compensation_key UUID,
-    order_id UUID,
-    
-    -- Other fields
     last_idempotency_key UUID,
+    order_id UUID,
     product_id UUID,
     quantity INTEGER NOT NULL CHECK (quantity >= 0),
     reserved_quantity INTEGER DEFAULT 0 CHECK (reserved_quantity >= 0),
-    
-    -- Indexes for better performance
-    INDEX idx_inventory_product_id ON (product_id),
-    INDEX idx_inventory_compensation_key ON (compensation_key),
+
+    INDEX idx_inventory_compensation_key_order_id ON (compensation_key, order_id) WHERE compensation_key IS NOT NULL AND order_id IS NOT NULL,
     INDEX idx_inventory_last_idempotency_key ON (last_idempotency_key),
-    INDEX idx_inventory_order_id ON (order_id),
-    INDEX idx_inventory_compensation_order ON (compensation_key, order_id) WHERE compensation_key IS NOT NULL AND order_id IS NOT NULL,
+    INDEX idx_inventory_product_id ON (product_id),
     
-    -- Ensure reserved quantity never exceeds available quantity
-    CONSTRAINT reserved_quantity_valid CHECK (reserved_quantity <= quantity),
-    
-    -- Composite unique constraint on compensation_key and order_id (when both exist)
-    CONSTRAINT unique_compensation_order UNIQUE NULLS NOT DISTINCT (compensation_key, order_id)
+    CONSTRAINT reserved_quantity_valid CHECK (reserved_quantity <= quantity)
 );
     `
 
@@ -125,8 +107,8 @@ INSERT INTO tbl_inventory ${sql.insert({ ...data })}
 ON CONFLICT (id) 
 DO UPDATE SET
     compensation_key = EXCLUDED.compensation_key,
-    order_id = EXCLUDED.order_id,
     last_idempotency_key = EXCLUDED.last_idempotency_key,
+    order_id = EXCLUDED.order_id,
     product_id = EXCLUDED.product_id,
     quantity = EXCLUDED.quantity,
     reserved_quantity = EXCLUDED.reserved_quantity
@@ -260,7 +242,7 @@ const InventoryHttpApiLive = HttpApiBuilder.group(
             }
 
             // Update saga log
-            const inventoryStep = sagaLog.steps.find((s) => s.stepName === "UPDATE_INVENTORY")
+            const inventoryStep = sagaLog.steps.find((s) => s.name === "UPDATE_INVENTORY")
             inventoryStep.status = "IN_PROGRESS"
             inventoryStep.timestamp = new Date()
             yield* sagaLogRepository.save(sagaLog)
@@ -300,9 +282,9 @@ const InventoryHttpApiLive = HttpApiBuilder.group(
             // Write shipping event to Outbox
             yield* Console.log(`[Inventory Service] Writing shipping event to Outbox`)
 
-            const shippingEventId = EventId.make(uuidv7())
+            const shippingEventId = OutboxId.make(uuidv7())
             const outboxEntry = new Outbox({
-              eventId: shippingEventId,
+              id: shippingEventId,
               aggregateId: OrderId.make(orderId.toString()),
               eventType: "InventoryUpdated",
               payload: {
@@ -352,9 +334,10 @@ const InventoryHttpApiLive = HttpApiBuilder.group(
             // Restore inventory
             inventory = new Inventory({
               ...inventory,
+              compensationKey: idempotencyKey,
+              orderId,
               quantity: inventory.quantity + quantity,
-              reservedQuantity: Math.max(0, inventory.reservedQuantity - quantity),
-              compensationOrder: { compensationKey: idempotencyKey, orderId }
+              reservedQuantity: Math.max(0, inventory.reservedQuantity - quantity)
             })
             inventory = yield* inventoryRepository.save(inventory)
 

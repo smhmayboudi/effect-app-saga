@@ -27,9 +27,9 @@ const ShippingId = Schema.UUID.pipe(
 type ShippingId = typeof ShippingId.Type
 
 const ShippingSchema = Schema.Struct({
+  id: ShippingId,
   compensationKey: Schema.optionalWith(Schema.NullOr(IdempotencyKey), { default: () => null }),
   customerId: CustomerId,
-  id: ShippingId,
   idempotencyKey: IdempotencyKey,
   orderId: OrderId,
   sagaLogId: SagaLogId,
@@ -78,24 +78,16 @@ CREATE TYPE shipping_status AS ENUM ('PENDING', 'SHIPPED', 'DELIVERED', 'CANCELL
 -- Create the shipping table without foreign key constraints
 CREATE TABLE tbl_shipping (
     id UUID PRIMARY KEY,
+    compensation_key UUID,
     customer_id UUID NOT NULL,
     idempotency_key UUID NOT NULL,
     order_id UUID NOT NULL,
     saga_log_id UUID NOT NULL,
     status shipping_status NOT NULL DEFAULT 'PENDING',
-    
-    compensation_key UUID,
 
-    -- Indexes for better performance
-    INDEX idx_shipping_customer_id ON (customer_id),
-    INDEX idx_shipping_order_id ON (order_id),
-    INDEX idx_shipping_status ON (status),
-    INDEX idx_shipping_saga_log_id ON (saga_log_id),
+    INDEX idx_shipping_compensation_key_order_id ON (compensation_key, order_id),
     INDEX idx_shipping_idempotency_key ON (idempotency_key),
-    
-    -- Add unique constraints only
-    CONSTRAINT unique_idempotency_key UNIQUE (idempotency_key),
-    CONSTRAINT unique_order_id UNIQUE (order_id)
+    INDEX idx_shipping_saga_log_id ON (saga_log_id)
 );
     `
 
@@ -108,7 +100,7 @@ CREATE TABLE tbl_shipping (
           sagaLogId ?
           sql`SELECT * FROM tbl_shipping WHERE saga_log_id = ${sagaLogId} LIMIT 1` :
           shippingId ?
-          sql`SELECT * FROM tbl_shipping WHERE shipping_id = ${shippingId} LIMIT 1` :
+          sql`SELECT * FROM tbl_shipping WHERE id = ${shippingId} LIMIT 1` :
           sql`SELECT * FROM tbl_shipping LIMIT 1`).pipe(
             Effect.catchTag("SqlError", Effect.die),
             Effect.flatMap((rows) => Effect.succeed(rows[0])),
@@ -120,12 +112,12 @@ CREATE TABLE tbl_shipping (
 INSERT INTO tbl_shipping ${sql.insert({ ...data })}
 ON CONFLICT (id) 
 DO UPDATE SET
+    compensation_key = EXCLUDED.compensation_key,
     customer_id = EXCLUDED.customer_id,
     idempotency_key = EXCLUDED.idempotency_key,
     order_id = EXCLUDED.order_id,
     saga_log_id = EXCLUDED.saga_log_id,
-    status = EXCLUDED.status,
-    compensation_key = EXCLUDED.compensation_key
+    status = EXCLUDED.status
 RETURNING *;
 `.pipe(
           Effect.catchTag("SqlError", Effect.die),
@@ -243,7 +235,7 @@ const ShippingHttpApiLive = HttpApiBuilder.group(
             yield* Console.log(`[Shipping Service] Shipping created: ${orderId}`)
 
             // Update saga log
-            const shippingStep = sagaLog.steps.find((s) => s.stepName === "DELIVER_ORDER")
+            const shippingStep = sagaLog.steps.find((s) => s.name === "DELIVER_ORDER")
             if (shippingStep) {
               shippingStep.status = "IN_PROGRESS"
               shippingStep.timestamp = new Date()

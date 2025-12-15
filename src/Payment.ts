@@ -18,7 +18,7 @@ import { v7 as uuidv7 } from "uuid"
 import { CustomerId } from "./Customer.js"
 import { IdempotencyKey } from "./IdempotencyKey.js"
 import { OrderId } from "./Order.js"
-import { EventId, Outbox, OutboxRepository } from "./Outbox.js"
+import { Outbox, OutboxId, OutboxRepository } from "./Outbox.js"
 import { SagaLogId, SagaLogRepository } from "./SagaLog.js"
 
 const PaymentId = Schema.UUID.pipe(
@@ -252,7 +252,7 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
             yield* paymentRepository.save(payment)
 
             // Update saga log
-            const paymentStep = sagaLog.steps.find((s) => s.stepName === "PROCESS_PAYMENT")
+            const paymentStep = sagaLog.steps.find((s) => s.name === "PROCESS_PAYMENT")
             paymentStep.status = "IN_PROGRESS"
             paymentStep.timestamp = new Date()
             yield* sagaLogRepository.save(sagaLog)
@@ -277,9 +277,9 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
             // Write inventory event to Outbox
             yield* Console.log(`[Payment Service] Writing inventory event to Outbox`)
 
-            const inventoryEventId = EventId.make(uuidv7())
+            const inventoryEventId = OutboxId.make(uuidv7())
             const outboxEntry = new Outbox({
-              eventId: inventoryEventId,
+              id: inventoryEventId,
               aggregateId: orderId,
               eventType: "PaymentProcessed",
               payload: {
