@@ -222,7 +222,6 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
             // try {
             // Re-fetch sagaLog to ensure we have the latest version
             // sagaLog = await SagaLog.findOne({ sagaLogId })
-
             // if (!sagaLog) {
             //   // throw new Error("SagaLog not found")
             //   return {
@@ -244,9 +243,6 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
             })
             yield* paymentRepository.save(payment)
             // Update saga log
-            // const paymentStep = sagaLog.steps.find((s) => s.name === "PROCESS_PAYMENT")
-            // paymentStep.status = "IN_PROGRESS"
-            // paymentStep.timestamp = new Date()
             sagaLog = new SagaLog({
               ...sagaLog,
               steps: sagaLog.steps.map((step) =>
@@ -256,10 +252,8 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
               )
             })
             yield* sagaLogRepository.save(sagaLog)
-
             if (shouldFail) {
               yield* Console.log(`[Payment Service] Payment failed`)
-
               // Update saga log
               sagaLog = new SagaLog({
                 ...sagaLog,
@@ -290,9 +284,8 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
             yield* sagaLogRepository.save(sagaLog)
             // Write inventory event to Outbox
             yield* Console.log(`[Payment Service] Writing inventory event to Outbox`)
-            const inventoryEventId = OutboxId.make(uuidv7())
             const outboxEntry = new Outbox({
-              id: inventoryEventId,
+              id: OutboxId.make(uuidv7()),
               aggregateId: orderId,
               eventType: "PaymentProcessed",
               payload: {
@@ -306,8 +299,12 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
               isPublished: false
             })
             yield* outboxRepository.save(outboxEntry)
-            yield* Console.log(`[Payment Service] Inventory event written to Outbox: ${inventoryEventId}`)
-            return { outboxEntry, payment }
+            yield* Console.log(`[Payment Service] Inventory event written to Outbox: ${outboxEntry.id}`)
+            return {
+              data: payment,
+              message: "Payment processed - inventory event queued",
+              success: true
+            }
             // } catch (innerError) {
             //   throw innerError
             // }
@@ -322,7 +319,6 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
           Effect.gen(function*() {
             yield* Console.log(`[Payment Service] Payment refund ${{ idempotencyKey, orderId, sagaLogId }}`)
             let payment = yield* paymentRepository.findOne({ orderSagaLog: { orderId, sagaLogId } })
-
             if (!payment) {
               // throw new Error("Payment not found")
               return {
@@ -375,6 +371,7 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
           }
           return {
             data: payment,
+            message: "",
             success: true
           }
         }))

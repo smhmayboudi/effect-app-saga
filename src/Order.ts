@@ -201,11 +201,11 @@ const OrderHttpApiLive = HttpApiBuilder.group(
             // const { orderId, paymentEventId } = await withTransaction(async (session) => {
             // Initialize Saga Log with idempotency key
             let sagaLog = new SagaLog({
+              id: sagaLogId,
               customerId,
               idempotencyKey,
               productId,
               quantity,
-              id: sagaLogId,
               status: "STARTED",
               steps: [
                 {
@@ -242,9 +242,8 @@ const OrderHttpApiLive = HttpApiBuilder.group(
             yield* sagaLogRepository.save(sagaLog)
             // Step 1: Create Order
             yield* Console.log(`[Order Service] Executing Step 1: CREATE_ORDER`)
-            const orderId = OrderId.make(uuidv7())
             const order = new Order({
-              id: orderId,
+              id: OrderId.make(uuidv7()),
               customerId,
               productId,
               quantity,
@@ -253,27 +252,26 @@ const OrderHttpApiLive = HttpApiBuilder.group(
               status: "CONFIRMED"
             })
             yield* orderRepository.save(order)
-            yield* Console.log(`[Order Service] Order created: ${orderId}`)
+            yield* Console.log(`[Order Service] Order created: ${order.id}`)
             // Update saga log
             sagaLog = new SagaLog({
               ...sagaLog,
-              orderId,
+              orderId: order.id,
               steps: sagaLog.steps.map((step) =>
                 step.name === "CREATE_ORDER"
                   ? { ...step, status: "COMPLETED", timestamp: new Date() }
                   : step
               )
             })
-            sagaLog = yield* sagaLogRepository.save(sagaLog)
+            yield* sagaLogRepository.save(sagaLog)
             // Write payment event to Outbox
             yield* Console.log(`[Order Service] Writing payment event to Outbox`)
-            const paymentEventId = OutboxId.make(uuidv7())
             const outboxEntry = new Outbox({
-              id: paymentEventId,
-              aggregateId: orderId,
+              id: OutboxId.make(uuidv7()),
+              aggregateId: order.id,
               eventType: "OrderCreated",
               payload: {
-                orderId,
+                orderId: order.id,
                 customerId,
                 amount: totalPrice,
                 sagaLogId
@@ -283,7 +281,7 @@ const OrderHttpApiLive = HttpApiBuilder.group(
               isPublished: false
             })
             yield* outboxRepository.save(outboxEntry)
-            yield* Console.log(`[Order Service] Payment event written to Outbox: ${paymentEventId}`)
+            yield* Console.log(`[Order Service] Payment event written to Outbox: ${outboxEntry.id}`)
             // Update saga log
             sagaLog = new SagaLog({
               ...sagaLog,
@@ -293,12 +291,12 @@ const OrderHttpApiLive = HttpApiBuilder.group(
                   : step
               )
             })
-            sagaLog = yield* sagaLogRepository.save(sagaLog)
+            yield* sagaLogRepository.save(sagaLog)
             // return { orderId, paymentEventId }
             // })
             return {
               message: "Order saga initiated successfully - events queued for processing",
-              orderId,
+              orderId: order.id,
               sagaLogId,
               success: true
             }
@@ -350,6 +348,7 @@ const OrderHttpApiLive = HttpApiBuilder.group(
 
           return {
             data: order,
+            message: "",
             success: true
           }
         }))

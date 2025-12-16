@@ -220,7 +220,7 @@ const ShippingHttpApiLive = HttpApiBuilder.group(
             }
             // Execute shipping creation and saga completion without transaction
             // try {
-            let shipping = new Shipping({
+            const shipping = new Shipping({
               id: ShippingId.make(uuidv7()),
               idempotencyKey,
               orderId,
@@ -228,7 +228,7 @@ const ShippingHttpApiLive = HttpApiBuilder.group(
               status: "SHIPPED",
               sagaLogId
             })
-            shipping = yield* shippingRepository.save(shipping)
+            yield* shippingRepository.save(shipping)
             yield* Console.log(`[Shipping Service] Shipping created: ${orderId}`)
             // Update saga log
             const shippingStep = sagaLog.steps.find((s) => s.name === "DELIVER_ORDER")
@@ -280,8 +280,9 @@ const ShippingHttpApiLive = HttpApiBuilder.group(
             if (shipping) {
               console.log(`[Shipping Service] Shipping already cancelled with key: ${idempotencyKey}`)
               return {
-                success: true,
-                message: "Shipping already cancelled"
+                data: shipping,
+                message: "Shipping already cancelled",
+                success: true
               }
             }
             // shipping = await Shipping.findOneAndUpdate(
@@ -306,7 +307,7 @@ const ShippingHttpApiLive = HttpApiBuilder.group(
               compensationKey: idempotencyKey,
               status: "CANCELLED"
             })
-            shipping = yield* shippingRepository.save(shipping)
+            yield* shippingRepository.save(shipping)
             yield* Console.log(`[Shipping Service] Shipping cancelled: ${orderId}`)
 
             return {
@@ -331,6 +332,7 @@ const ShippingHttpApiLive = HttpApiBuilder.group(
 
           return {
             data: shipping,
+            message: "",
             success: true
           }
         }))
