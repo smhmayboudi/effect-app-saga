@@ -99,7 +99,23 @@ CREATE TABLE tbl_outbox (
           Effect.catchTag("ParseError", Effect.die)
         ),
       save: (data) =>
-        sql`INSERT INTO tbl_outbox ${sql.insert({ ...data })} RETURNING *`.pipe(
+        sql`
+INSERT INTO tbl_outbox ${sql.insert({ ...data })}
+ON CONFLICT (id) 
+DO UPDATE SET
+    aggregate_id = EXCLUDED.aggregate_id,
+    event_type = EXCLUDED.event_type,
+    is_published = EXCLUDED.is_published,
+    last_error = EXCLUDED.last_error,
+    max_retries = EXCLUDED.max_retries,
+    payload = EXCLUDED.payload,
+    publish_attempts = EXCLUDED.publish_attempts,
+    published_at = EXCLUDED.published_at,
+    target_endpoint = EXCLUDED.target_endpoint,
+    target_service = EXCLUDED.target_service,
+    created_at = EXCLUDED.created_at
+RETURNING *;
+`.pipe(
           Effect.catchTag("SqlError", Effect.die),
           Effect.flatMap((rows) => Effect.succeed(rows[0])),
           Effect.flatMap((row) => Outbox.decodeUnknown(row)),
@@ -176,7 +192,7 @@ const publishSingleEvent = (event: Outbox) =>
   Effect.gen(function*() {
     const config = yield* ConfigService
     const httpCient = yield* HttpClient.HttpClient
-    const repository = yield* OutboxRepository
+    const outboxRepository = yield* OutboxRepository
 
     yield* Console.info(
       `Publishing event: ${event.eventType} with ID: ${event.id}`
@@ -202,42 +218,36 @@ const publishSingleEvent = (event: Outbox) =>
       Effect.flatMap((res) => res.json),
       Effect.timeout(Duration.millis(config.requestTimeoutMs))
     )
-
     const newEvent = Outbox.make({
       ...event,
       isPublished: true,
       publishedAt: new Date()
     })
-
-    yield* repository.save(newEvent)
+    yield* outboxRepository.save(newEvent)
     yield* Console.info(`Event isPublished successfully: ${event.id}`)
   }).pipe(
     Effect.catchAll((error) =>
       Effect.gen(function*() {
         const config = yield* ConfigService
-        const repository = yield* OutboxRepository
-
+        const outboxRepository = yield* OutboxRepository
         yield* Console.error(
           `Failed to publish event ${event.id}: ${error.message}`
         )
-
-        const newEvent = Outbox.make({
+        let newEvent = Outbox.make({
           ...event,
           publishAttempts: event.publishAttempts + 1,
           lastError: error.message
         })
-
         if (newEvent.publishAttempts >= config.maxRetries) {
           yield* Console.warn(`Event ${event.id} exhausted all retries`)
-          const newEvent2 = Outbox.make({
+          newEvent = Outbox.make({
             ...newEvent,
             isPublished: false
           })
-          yield* repository.save(newEvent2)
+          yield* outboxRepository.save(newEvent)
           return
         }
-
-        yield* repository.save(event)
+        yield* outboxRepository.save(event)
       })
     )
   )
@@ -245,18 +255,14 @@ const publishSingleEvent = (event: Outbox) =>
 const publishPendingEvents = Effect.gen(function*() {
   const config = yield* ConfigService
   const repository = yield* OutboxRepository
-
   const events = yield* repository.findUnpublished({
     batchSize: config.batchSize
   })
-
   if (events.length === 0) {
     yield* Console.info("No pending events found")
     return
   }
-
   yield* Console.info(`Found ${events.length} unpublished events`)
-
   // Process events in parallel with limited concurrency
   yield* Effect.forEach(events, publishSingleEvent, {
     concurrency: 5
