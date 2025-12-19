@@ -304,14 +304,14 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
             const outboxEntry = new Outbox({
               id: OutboxId.make(uuidv7()),
               aggregateId: orderId,
-              eventType: "PaymentProcessed",
+              eventType: "PAYMENT_PROCESSED",
               payload: {
                 orderId,
                 sagaLogId,
                 productId: sagaLog.productId || "unknown",
                 quantity: sagaLog.quantity || 1
               },
-              targetService: "inventory",
+              targetService: "INVENTORY",
               targetEndpoint: "/inventories/update-inventory",
               isPublished: false
             })

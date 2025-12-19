@@ -303,13 +303,13 @@ const InventoryHttpApiLive = HttpApiBuilder.group(
             const outboxEntry = new Outbox({
               id: OutboxId.make(uuidv7()),
               aggregateId: orderId,
-              eventType: "InventoryUpdated",
+              eventType: "INVENTORY_UPDATED",
               payload: {
                 customerId: sagaLog.customerId || "unknown",
                 orderId,
                 sagaLogId
               },
-              targetService: "shipping",
+              targetService: "SHIPPING",
               targetEndpoint: "/shipments/deliver-order",
               isPublished: false
             })

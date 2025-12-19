@@ -283,14 +283,14 @@ const OrderHttpApiLive = HttpApiBuilder.group(
             const outboxEntry = new Outbox({
               id: OutboxId.make(uuidv7()),
               aggregateId: order.id,
-              eventType: "OrderCreated",
+              eventType: "ORDER_CREATED",
               payload: {
                 orderId: order.id,
                 customerId,
                 amount: totalPrice,
                 sagaLogId
               },
-              targetService: "payment",
+              targetService: "PAYMENT",
               targetEndpoint: "/payments/process-payment",
               isPublished: false
             })

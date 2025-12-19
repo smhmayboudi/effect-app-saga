@@ -14,14 +14,14 @@ const OutboxSchema = Schema.Struct({
   id: OutboxId,
   aggregateId: Schema.UUID, // Use UUID directly to avoid circular dependency
   eventType: Schema.Literal(
-    "OrderCreated",
-    "PaymentProcessed",
-    "PaymentFailed",
-    "InventoryUpdated",
-    "InventoryFailed",
-    "OrderShipped",
-    "OrderDelivered",
-    "OrderCompensated"
+    "ORDER_CREATED",
+    "PAYMENT_PROCESSED",
+    "PAYMENT_FAILED",
+    "INVENTORY_UPDATED",
+    "INVENTORY_FAILED",
+    "ORDER_SHIPPED",
+    "ORDER_DELIVERED",
+    "ORDER_COMPENSATED"
   ).annotations({ description: "Event Type" }),
   isPublished: Schema.optionalWith(Schema.Boolean, { default: () => false }).annotations({ description: "Published" }),
   lastError: Schema.optionalWith(Schema.NullOr(Schema.String).annotations({ description: "Last Error" }), {
@@ -36,7 +36,7 @@ const OutboxSchema = Schema.Struct({
     default: () => null
   }),
   targetEndpoint: Schema.String.annotations({ description: "Target Endpoint" }),
-  targetService: Schema.Literal("payment", "inventory", "shipping", "order")
+  targetService: Schema.Literal("PAYMENT", "INVENTORY", "SHIPPING", "ORDER")
     .annotations({ description: "Target Service" }),
   createdAt: Schema.optionalWith(Schema.Date, { default: () => new Date() }).annotations({ description: "Created At" })
   // updatedAt: Schema.Date.annotations({ description: "Updated At" }),
@@ -71,7 +71,7 @@ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_type WHERE typname = 'outbox_event_type'
   ) THEN
-    CREATE TYPE outbox_event_type AS ENUM ('OrderCreated', 'PaymentProcessed', 'PaymentFailed', 'InventoryUpdated', 'InventoryFailed', 'OrderShipped', 'OrderDelivered', 'OrderCompensated');
+    CREATE TYPE outbox_event_type AS ENUM ('ORDER_CREATED', 'PAYMENT_PROCESSED', 'PAYMENT_FAILED', 'INVENTORY_UPDATED', 'INVENTORY_FAILED', 'ORDER_SHIPPED', 'ORDER_DELIVERED', 'ORDER_COMPENSATED');
   END IF;
 END
 $$;
@@ -82,7 +82,7 @@ BEGIN
   IF NOT EXISTS (
     SELECT 1 FROM pg_type WHERE typname = 'outbox_target_service'
   ) THEN
-    CREATE TYPE outbox_target_service AS ENUM ('payment', 'inventory', 'shipping', 'order');
+    CREATE TYPE outbox_target_service AS ENUM ('PAYMENT', 'INVENTORY', 'SHIPPING', 'ORDER');
   END IF;
 END
 $$;
@@ -168,17 +168,17 @@ const ConfigServiceLive = Layer.effect(
       Config.withDefault(5000)
     )
     const serviceUrls = {
-      order: yield* Config.string("ORDER_SERVICE_URL").pipe(
-        Config.withDefault("http://localhost:3001")
+      ORDER: yield* Config.string("ORDER_SERVICE_URL").pipe(
+        Config.withDefault("http://127.0.0.1:3001")
       ),
-      payment: yield* Config.string("PAYMENT_SERVICE_URL").pipe(
-        Config.withDefault("http://localhost:3002")
+      PAYMENT: yield* Config.string("PAYMENT_SERVICE_URL").pipe(
+        Config.withDefault("http://127.0.0.1:3002")
       ),
-      inventory: yield* Config.string("INVENTORY_SERVICE_URL").pipe(
-        Config.withDefault("http://localhost:3003")
+      INVENTORY: yield* Config.string("INVENTORY_SERVICE_URL").pipe(
+        Config.withDefault("http://127.0.0.1:3003")
       ),
-      shipping: yield* Config.string("SHIPPING_SERVICE_URL").pipe(
-        Config.withDefault("http://localhost:3004")
+      SHIPPING: yield* Config.string("SHIPPING_SERVICE_URL").pipe(
+        Config.withDefault("http://127.0.0.1:3004")
       )
     }
 
