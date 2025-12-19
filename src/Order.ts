@@ -15,8 +15,9 @@ import { PgClient } from "@effect/sql-pg"
 import { Console, Context, Effect, flow, Layer, Logger, LogLevel, Redacted, Schema, String } from "effect"
 import * as http from "node:http"
 import { v7 as uuidv7 } from "uuid"
-import { CustomerId } from "./Customer.js"
+import { CustomerId } from "./CustomerId.js"
 import { IdempotencyKey } from "./IdempotencyKey.js"
+import { OrderId } from "./OrderId.js"
 import {
   ApplicationLayer as OutboxApplicationLayer,
   Outbox,
@@ -24,14 +25,8 @@ import {
   OutboxRepository,
   OutboxRepositoryLive
 } from "./Outbox.js"
-import { ProductId } from "./Product.js"
+import { ProductId } from "./ProductId.js"
 import { SagaLog, SagaLogId, SagaLogRepository, SagaLogRepositoryLive } from "./SagaLog.js"
-
-export const OrderId = Schema.UUID.pipe(
-  Schema.brand("OrderId"),
-  Schema.annotations({ description: "Order Identification" })
-)
-export type OrderId = typeof OrderId.Type
 
 const OrderSchema = Schema.Struct({
   id: OrderId,
@@ -404,7 +399,6 @@ const gracefulShutdown = <A, E, R>(layer: Layer.Layer<A, E, R>) =>
 HttpApiBuilder.serve(flow(
   HttpMiddleware.cors({
     allowedOrigins: [
-      "http://127.0.0.1:3000",
       "http://127.0.0.1:3001",
       "http://127.0.0.1:3002",
       "http://127.0.0.1:3003",

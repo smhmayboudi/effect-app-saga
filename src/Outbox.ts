@@ -293,7 +293,7 @@ const publishPendingEvents = Effect.gen(function*() {
 // )
 
 const pollOnce = publishPendingEvents.pipe(
-  Effect.tap(() => Console.debug("Poll cycle completed"))
+  Effect.tap(() => Console.log("Poll cycle completed"))
 )
 
 const pollingSchedule = (pollIntervalMs: number) =>

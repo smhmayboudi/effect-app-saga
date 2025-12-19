@@ -15,9 +15,9 @@ import { PgClient } from "@effect/sql-pg"
 import { Console, Context, Effect, flow, Layer, Logger, LogLevel, Redacted, Schema, String } from "effect"
 import * as http from "node:http"
 import { v7 as uuidv7 } from "uuid"
-import { CustomerId } from "./Customer.js"
+import { CustomerId } from "./CustomerId.js"
 import { IdempotencyKey } from "./IdempotencyKey.js"
-import { OrderId } from "./Order.js"
+import { OrderId } from "./OrderId.js"
 import { ApplicationLayer as OutboxApplicationLayer } from "./Outbox.js"
 import { SagaLog, SagaLogId, SagaLogRepository, SagaLogRepositoryLive } from "./SagaLog.js"
 
@@ -94,13 +94,13 @@ CREATE TABLE IF NOT EXISTS tbl_shipping (
 );
     `.pipe(Effect.catchTag("SqlError", Effect.die))
     yield* sql`
-CREATE INDEX IF NOT EXISTS idx_shipping_compensation_key_order_id ON (compensation_key, order_id);
+CREATE INDEX IF NOT EXISTS idx_shipping_compensation_key_order_id ON tbl_shipping(compensation_key, order_id);
     `.pipe(Effect.catchTag("SqlError", Effect.die))
     yield* sql`
-CREATE INDEX IF NOT EXISTS idx_shipping_idempotency_key ON (idempotency_key);
+CREATE INDEX IF NOT EXISTS idx_shipping_idempotency_key ON tbl_shipping(idempotency_key);
     `.pipe(Effect.catchTag("SqlError", Effect.die))
     yield* sql`
-CREATE INDEX IF NOT EXISTS idx_shipping_saga_log_id ON (saga_log_id);
+CREATE INDEX IF NOT EXISTS idx_shipping_saga_log_id ON tbl_shipping(saga_log_id);
     `.pipe(Effect.catchTag("SqlError", Effect.die))
 
     return {
@@ -385,7 +385,6 @@ const gracefulShutdown = <A, E, R>(layer: Layer.Layer<A, E, R>) =>
 HttpApiBuilder.serve(flow(
   HttpMiddleware.cors({
     allowedOrigins: [
-      "http://127.0.0.1:3000",
       "http://127.0.0.1:3001",
       "http://127.0.0.1:3002",
       "http://127.0.0.1:3003",

@@ -16,7 +16,8 @@ import { Console, Context, Effect, flow, Layer, Logger, LogLevel, Redacted, Sche
 import * as http from "node:http"
 import { v7 as uuidv7 } from "uuid"
 import { IdempotencyKey } from "./IdempotencyKey.js"
-import { OrderId } from "./Order.js"
+import { InventoryId } from "./InventoryId.js"
+import { OrderId } from "./OrderId.js"
 import {
   ApplicationLayer as OutboxApplicationLayer,
   Outbox,
@@ -24,14 +25,8 @@ import {
   OutboxRepository,
   OutboxRepositoryLive
 } from "./Outbox.js"
-import { ProductId } from "./Product.js"
+import { ProductId } from "./ProductId.js"
 import { SagaLog, SagaLogId, SagaLogRepository, SagaLogRepositoryLive } from "./SagaLog.js"
-
-export const InventoryId = Schema.UUID.pipe(
-  Schema.brand("InventoryId"),
-  Schema.annotations({ description: "Inventory Identification" })
-)
-export type InventoryId = typeof InventoryId.Type
 
 const InventorySchemaStruct = Schema.Struct({
   id: InventoryId,
@@ -455,7 +450,6 @@ const gracefulShutdown = <A, E, R>(layer: Layer.Layer<A, E, R>) =>
 HttpApiBuilder.serve(flow(
   HttpMiddleware.cors({
     allowedOrigins: [
-      "http://127.0.0.1:3000",
       "http://127.0.0.1:3001",
       "http://127.0.0.1:3002",
       "http://127.0.0.1:3003",

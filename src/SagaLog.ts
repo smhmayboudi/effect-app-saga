@@ -1,8 +1,8 @@
 import { SqlClient } from "@effect/sql"
 import { Context, Effect, Layer, Schema } from "effect"
-import { CustomerId } from "./Customer.js"
+import { CustomerId } from "./CustomerId.js"
 import { IdempotencyKey } from "./IdempotencyKey.js"
-import { ProductId } from "./Product.js"
+import { ProductId } from "./ProductId.js"
 
 export const SagaLogId = Schema.UUID.pipe(
   Schema.brand("SagaLogId"),
