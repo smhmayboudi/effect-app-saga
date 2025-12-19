@@ -18,6 +18,7 @@ import { v7 as uuidv7 } from "uuid"
 import { CustomerId } from "./Customer.js"
 import { IdempotencyKey } from "./IdempotencyKey.js"
 import { OrderId } from "./Order.js"
+import { ApplicationLayer as OutboxApplicationLayer } from "./Outbox.js"
 import { SagaLog, SagaLogId, SagaLogRepository, SagaLogRepositoryLive } from "./SagaLog.js"
 
 const ShippingId = Schema.UUID.pipe(
@@ -349,8 +350,9 @@ const ApplicationLayer = ShippingHttpApiLive.pipe(
   Layer.provide(
     Layer.provideMerge(
       Layer.mergeAll(
-        ShippingRepositoryLive,
-        SagaLogRepositoryLive
+        OutboxApplicationLayer,
+        SagaLogRepositoryLive,
+        ShippingRepositoryLive
       ),
       PgLive
     )

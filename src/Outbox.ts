@@ -93,7 +93,7 @@ CREATE TABLE tbl_outbox (
 
     return {
       findUnpublished: ({ batchSize }) =>
-        sql`SELECT * FROM tbl_outbox WEHRE is_published = FALSE LIMIT ${batchSize}`.pipe(
+        sql`SELECT * FROM tbl_outbox WHERE is_published = FALSE LIMIT ${batchSize}`.pipe(
           Effect.catchTag("SqlError", Effect.die),
           Effect.flatMap((outboxs) => Effect.all(outboxs.map((outbox) => Outbox.decodeUnknown(outbox)))),
           Effect.catchTag("ParseError", Effect.die)
@@ -267,13 +267,14 @@ const publishPendingEvents = Effect.gen(function*() {
   yield* Effect.forEach(events, publishSingleEvent, {
     concurrency: 5
   })
-}).pipe(
-  Effect.catchAll((error) =>
-    Effect.gen(function*() {
-      yield* Console.error(`Error in publishPendingEvents: ${error.message}`)
-    })
-  )
-)
+})
+// .pipe(
+//   Effect.catchAll((error) =>
+//     Effect.gen(function*() {
+//       yield* Console.error(`Error in publishPendingEvents: ${error.message}`)
+//     })
+//   )
+// )
 
 const pollOnce = publishPendingEvents.pipe(
   Effect.tap(() => Console.debug("Poll cycle completed"))

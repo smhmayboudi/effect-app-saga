@@ -18,7 +18,13 @@ import { v7 as uuidv7 } from "uuid"
 import { CustomerId } from "./Customer.js"
 import { IdempotencyKey } from "./IdempotencyKey.js"
 import { OrderId } from "./Order.js"
-import { Outbox, OutboxId, OutboxRepository, OutboxRepositoryLive } from "./Outbox.js"
+import {
+  ApplicationLayer as OutboxApplicationLayer,
+  Outbox,
+  OutboxId,
+  OutboxRepository,
+  OutboxRepositoryLive
+} from "./Outbox.js"
 import { SagaLog, SagaLogId, SagaLogRepository, SagaLogRepositoryLive } from "./SagaLog.js"
 
 const PaymentId = Schema.UUID.pipe(
@@ -388,8 +394,9 @@ const ApplicationLayer = PaymentHttpApiLive.pipe(
   Layer.provide(
     Layer.provideMerge(
       Layer.mergeAll(
-        PaymentRepositoryLive,
+        OutboxApplicationLayer,
         OutboxRepositoryLive,
+        PaymentRepositoryLive,
         SagaLogRepositoryLive
       ),
       PgLive

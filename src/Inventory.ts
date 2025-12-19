@@ -17,7 +17,13 @@ import * as http from "node:http"
 import { v7 as uuidv7 } from "uuid"
 import { IdempotencyKey } from "./IdempotencyKey.js"
 import { OrderId } from "./Order.js"
-import { Outbox, OutboxId, OutboxRepository, OutboxRepositoryLive } from "./Outbox.js"
+import {
+  ApplicationLayer as OutboxApplicationLayer,
+  Outbox,
+  OutboxId,
+  OutboxRepository,
+  OutboxRepositoryLive
+} from "./Outbox.js"
 import { ProductId } from "./Product.js"
 import { SagaLog, SagaLogId, SagaLogRepository, SagaLogRepositoryLive } from "./SagaLog.js"
 
@@ -421,6 +427,7 @@ const ApplicationLayer = InventoryHttpApiLive.pipe(
     Layer.provideMerge(
       Layer.mergeAll(
         InventoryRepositoryLive,
+        OutboxApplicationLayer,
         OutboxRepositoryLive,
         SagaLogRepositoryLive
       ),
