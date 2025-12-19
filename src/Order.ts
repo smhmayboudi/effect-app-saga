@@ -12,7 +12,7 @@ import * as HttpApiScalar from "@effect/platform/HttpApiScalar"
 import * as HttpApiSwagger from "@effect/platform/HttpApiSwagger"
 import { SqlClient } from "@effect/sql"
 import { PgClient } from "@effect/sql-pg"
-import { Console, Context, Effect, flow, Layer, Logger, LogLevel, Schema, String } from "effect"
+import { Console, Context, Effect, flow, Layer, Logger, LogLevel, Redacted, Schema, String } from "effect"
 import * as http from "node:http"
 import { v7 as uuidv7 } from "uuid"
 import { CustomerId } from "./Customer.js"
@@ -72,10 +72,18 @@ const OrderRepositoryLive = Layer.effect(
     const sql = yield* SqlClient.SqlClient
 
     yield* sql`
-CREATE TYPE order_status AS ENUM ('PENDING', 'CONFIRMED', 'FAILED', 'COMPENSATED');
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_type WHERE typname = 'order_status'
+  ) THEN
+    CREATE TYPE order_status AS ENUM ('PENDING', 'CONFIRMED', 'FAILED', 'COMPENSATED');
+  END IF;
+END
+$$;
     `.pipe(Effect.catchTag("SqlError", Effect.die))
     yield* sql`
-CREATE TABLE orders (
+CREATE TABLE IF NOT EXISTS tbl_order (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
     customer_id UUID NOT NULL,
     product_id UUID NOT NULL,
@@ -363,8 +371,10 @@ const OrderHttpApiLive = HttpApiBuilder.group(
 
 const PgLive = PgClient.layer({
   database: "effect_pg_dev",
+  password: Redacted.make("password"),
   transformQueryNames: String.camelToSnake,
-  transformResultNames: String.snakeToCamel
+  transformResultNames: String.snakeToCamel,
+  username: "postgres"
 })
 
 const ApplicationLayer = OrderHttpApiLive.pipe(

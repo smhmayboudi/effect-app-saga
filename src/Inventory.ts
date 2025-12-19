@@ -12,7 +12,7 @@ import * as HttpApiScalar from "@effect/platform/HttpApiScalar"
 import * as HttpApiSwagger from "@effect/platform/HttpApiSwagger"
 import { SqlClient } from "@effect/sql"
 import { PgClient } from "@effect/sql-pg"
-import { Console, Context, Effect, flow, Layer, Logger, LogLevel, Schema, String } from "effect"
+import { Console, Context, Effect, flow, Layer, Logger, LogLevel, Redacted, Schema, String } from "effect"
 import * as http from "node:http"
 import { v7 as uuidv7 } from "uuid"
 import { IdempotencyKey } from "./IdempotencyKey.js"
@@ -76,7 +76,7 @@ const InventoryRepositoryLive = Layer.effect(
     const sql = yield* SqlClient.SqlClient
 
     yield* sql`
-CREATE TABLE tbl_inventory (
+CREATE TABLE IF NOT EXISTS tbl_inventory (
     id UUID PRIMARY KEY,
     compensation_key UUID,
     last_idempotency_key UUID,
@@ -84,13 +84,17 @@ CREATE TABLE tbl_inventory (
     product_id UUID,
     quantity INTEGER NOT NULL CHECK (quantity >= 0),
     reserved_quantity INTEGER DEFAULT 0 CHECK (reserved_quantity >= 0),
-
-    INDEX idx_inventory_compensation_key_order_id ON (compensation_key, order_id) WHERE compensation_key IS NOT NULL AND order_id IS NOT NULL,
-    INDEX idx_inventory_last_idempotency_key ON (last_idempotency_key),
-    INDEX idx_inventory_product_id ON (product_id),
-    
     CONSTRAINT reserved_quantity_valid CHECK (reserved_quantity <= quantity)
 );
+    `.pipe(Effect.catchTag("SqlError", Effect.die))
+    yield* sql`
+CREATE INDEX IF NOT EXISTS idx_inventory_compensation_key_order_id ON tbl_inventory(compensation_key, order_id) WHERE compensation_key IS NOT NULL AND order_id IS NOT NULL;
+    `.pipe(Effect.catchTag("SqlError", Effect.die))
+    yield* sql`
+CREATE INDEX IF NOT EXISTS idx_inventory_last_idempotency_key ON tbl_inventory(last_idempotency_key);
+    `.pipe(Effect.catchTag("SqlError", Effect.die))
+    yield* sql`
+CREATE INDEX IF NOT EXISTS idx_inventory_product_id ON tbl_inventory(product_id);
     `.pipe(Effect.catchTag("SqlError", Effect.die))
 
     return {
@@ -298,7 +302,7 @@ const InventoryHttpApiLive = HttpApiBuilder.group(
             yield* Console.log(`[Inventory Service] Writing shipping event to Outbox`)
             const outboxEntry = new Outbox({
               id: OutboxId.make(uuidv7()),
-              aggregateId: OrderId.make(orderId.toString()),
+              aggregateId: orderId,
               eventType: "InventoryUpdated",
               payload: {
                 customerId: sagaLog.customerId || "unknown",
@@ -418,8 +422,10 @@ const InventoryHttpApiLive = HttpApiBuilder.group(
 
 const PgLive = PgClient.layer({
   database: "effect_pg_dev",
+  password: Redacted.make("password"),
   transformQueryNames: String.camelToSnake,
-  transformResultNames: String.snakeToCamel
+  transformResultNames: String.snakeToCamel,
+  username: "postgres"
 })
 
 const ApplicationLayer = InventoryHttpApiLive.pipe(

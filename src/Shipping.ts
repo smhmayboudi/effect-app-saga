@@ -12,7 +12,7 @@ import * as HttpApiScalar from "@effect/platform/HttpApiScalar"
 import * as HttpApiSwagger from "@effect/platform/HttpApiSwagger"
 import { SqlClient } from "@effect/sql"
 import { PgClient } from "@effect/sql-pg"
-import { Console, Context, Effect, flow, Layer, Logger, LogLevel, Schema, String } from "effect"
+import { Console, Context, Effect, flow, Layer, Logger, LogLevel, Redacted, Schema, String } from "effect"
 import * as http from "node:http"
 import { v7 as uuidv7 } from "uuid"
 import { CustomerId } from "./Customer.js"
@@ -72,24 +72,35 @@ const ShippingRepositoryLive = Layer.effect(
     const sql = yield* SqlClient.SqlClient
 
     yield* sql`
--- Create ENUM type for shipping status
-CREATE TYPE shipping_status AS ENUM ('PENDING', 'SHIPPED', 'DELIVERED', 'CANCELLED');
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_type WHERE typname = 'shipping_status'
+  ) THEN
+    CREATE TYPE shipping_status AS ENUM ('PENDING', 'SHIPPED', 'DELIVERED', 'CANCELLED');
+  END IF;
+END
+$$;
     `.pipe(Effect.catchTag("SqlError", Effect.die))
     yield* sql`
--- Create the shipping table without foreign key constraints
-CREATE TABLE tbl_shipping (
+CREATE TABLE IF NOT EXISTS tbl_shipping (
     id UUID PRIMARY KEY,
     compensation_key UUID,
     customer_id UUID NOT NULL,
     idempotency_key UUID NOT NULL,
     order_id UUID NOT NULL,
     saga_log_id UUID NOT NULL,
-    status shipping_status NOT NULL DEFAULT 'PENDING',
-
-    INDEX idx_shipping_compensation_key_order_id ON (compensation_key, order_id),
-    INDEX idx_shipping_idempotency_key ON (idempotency_key),
-    INDEX idx_shipping_saga_log_id ON (saga_log_id)
+    status shipping_status NOT NULL DEFAULT 'PENDING'
 );
+    `.pipe(Effect.catchTag("SqlError", Effect.die))
+    yield* sql`
+CREATE INDEX IF NOT EXISTS idx_shipping_compensation_key_order_id ON (compensation_key, order_id);
+    `.pipe(Effect.catchTag("SqlError", Effect.die))
+    yield* sql`
+CREATE INDEX IF NOT EXISTS idx_shipping_idempotency_key ON (idempotency_key);
+    `.pipe(Effect.catchTag("SqlError", Effect.die))
+    yield* sql`
+CREATE INDEX IF NOT EXISTS idx_shipping_saga_log_id ON (saga_log_id);
     `.pipe(Effect.catchTag("SqlError", Effect.die))
 
     return {
@@ -342,8 +353,10 @@ const ShippingHttpApiLive = HttpApiBuilder.group(
 
 const PgLive = PgClient.layer({
   database: "effect_pg_dev",
+  password: Redacted.make("password"),
   transformQueryNames: String.camelToSnake,
-  transformResultNames: String.snakeToCamel
+  transformResultNames: String.snakeToCamel,
+  username: "postgres"
 })
 
 const ApplicationLayer = ShippingHttpApiLive.pipe(

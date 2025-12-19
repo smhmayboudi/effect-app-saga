@@ -2,7 +2,6 @@ import { SqlClient } from "@effect/sql"
 import { Context, Effect, Layer, Schema } from "effect"
 import { CustomerId } from "./Customer.js"
 import { IdempotencyKey } from "./IdempotencyKey.js"
-import { OrderId } from "./Order.js"
 import { ProductId } from "./Product.js"
 
 export const SagaLogId = Schema.UUID.pipe(
@@ -15,7 +14,7 @@ const SagaLogSchema = Schema.Struct({
   id: SagaLogId,
   customerId: CustomerId,
   idempotencyKey: IdempotencyKey,
-  orderId: Schema.optionalWith(Schema.NullOr(OrderId), { default: () => null }),
+  orderId: Schema.optionalWith(Schema.NullOr(Schema.UUID), { default: () => null }),
   productId: ProductId,
   quantity: Schema.Number.annotations({ description: "Quantity" }),
   status: Schema.optionalWith(
@@ -71,28 +70,68 @@ export const SagaLogRepositoryLive = Layer.effect(
     const sql = yield* SqlClient.SqlClient
 
     yield* sql`
-CREATE TYPE saga_status AS ENUM ('STARTED', 'IN_PROGRESS', 'COMPLETED', 'FAILED', 'COMPENSATING', 'COMPENSATED');
-    `
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_type WHERE typname = 'saga_status'
+  ) THEN
+    CREATE TYPE saga_status AS ENUM ('STARTED', 'IN_PROGRESS', 'COMPLETED', 'FAILED', 'COMPENSATING', 'COMPENSATED');
+  END IF;
+END
+$$;
+    `.pipe(Effect.catchTag("SqlError", Effect.die))
     yield* sql`
-CREATE TYPE step_compensation_status AS ENUM ('PENDING', 'IN_PROGRESS', 'COMPLETED', 'FAILED');
-    `
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_type WHERE typname = 'step_compensation_status'
+  ) THEN
+    CREATE TYPE step_compensation_status AS ENUM ('PENDING', 'IN_PROGRESS', 'COMPLETED', 'FAILED');
+  END IF;
+END
+$$;
+    `.pipe(Effect.catchTag("SqlError", Effect.die))
     yield* sql`
-CREATE TYPE step_name AS ENUM ('CREATE_ORDER', 'PROCESS_PAYMENT', 'UPDATE_INVENTORY', 'DELIVER_ORDER');
-    `
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_type WHERE typname = 'step_name'
+  ) THEN
+    CREATE TYPE step_name AS ENUM ('CREATE_ORDER', 'PROCESS_PAYMENT', 'UPDATE_INVENTORY', 'DELIVER_ORDER');
+  END IF;
+END
+$$;
+    `.pipe(Effect.catchTag("SqlError", Effect.die))
     yield* sql`
-CREATE TYPE step_status AS ENUM ('PENDING', 'IN_PROGRESS', 'COMPLETED', 'FAILED', 'COMPENSATED');
-    `
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_type WHERE typname = 'step_status'
+  ) THEN
+    CREATE TYPE step_status AS ENUM ('PENDING', 'IN_PROGRESS', 'COMPLETED', 'FAILED', 'COMPENSATED');
+  END IF;
+END
+$$;
+    `.pipe(Effect.catchTag("SqlError", Effect.die))
     yield* sql`
-CREATE TYPE step_record AS (
-    compensation_status step_compensation_status,
-    error TEXT,
-    name step_name,
-    status step_status,
-    timestamp TIMESTAMPTZ
-);
-    `
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_type WHERE typname = 'step_record'
+  ) THEN
+    CREATE TYPE step_record AS (
+      compensation_status step_compensation_status,
+      error TEXT,
+      name step_name,
+      status step_status,
+      timestamp TIMESTAMPTZ
+    );
+  END IF;
+END
+$$;
+    `.pipe(Effect.catchTag("SqlError", Effect.die))
     yield* sql`
-CREATE TABLE tbl_saga_log (
+CREATE TABLE IF NOT EXISTS tbl_saga_log (
     id UUID PRIMARY KEY,
     customer_id UUID NOT NULL,
     idempotency_key UUID NOT NULL,
@@ -102,19 +141,19 @@ CREATE TABLE tbl_saga_log (
     status saga_status NOT NULL DEFAULT 'STARTED',
     steps step_record[] NOT NULL DEFAULT '{}',
     total_price DECIMAL(10, 2) NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-    
-    INDEX idx_saga_log_idempotency_key (idempotency_key),
-    INDEX idx_saga_log_saga_log_id (saga_log_id)
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
-    `
+    `.pipe(Effect.catchTag("SqlError", Effect.die))
+    yield* sql`
+CREATE INDEX IF NOT EXISTS idx_saga_log_idempotency_key ON tbl_saga_log(idempotency_key);
+    `.pipe(Effect.catchTag("SqlError", Effect.die))
 
     return {
       findOne: ({ idempotencyKey, sagaLogId }) =>
         (idempotencyKey ?
           sql`SELECT * FROM tbl_saga_log WHERE idempotency_key = ${idempotencyKey}` :
           sagaLogId ?
-          sql`SELECT * FROM tbl_saga_log WHERE saga_log_id = ${sagaLogId}` :
+          sql`SELECT * FROM tbl_saga_log WHERE id = ${sagaLogId}` :
           sql`SELECT * FROM tbl_saga_log`)
           .pipe(
             Effect.catchTag("SqlError", Effect.die),

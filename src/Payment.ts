@@ -12,7 +12,7 @@ import * as HttpApiScalar from "@effect/platform/HttpApiScalar"
 import * as HttpApiSwagger from "@effect/platform/HttpApiSwagger"
 import { SqlClient } from "@effect/sql"
 import { PgClient } from "@effect/sql-pg"
-import { Console, Context, Effect, flow, Layer, Logger, LogLevel, Schema, String } from "effect"
+import { Console, Context, Effect, flow, Layer, Logger, LogLevel, Redacted, Schema, String } from "effect"
 import * as http from "node:http"
 import { v7 as uuidv7 } from "uuid"
 import { CustomerId } from "./Customer.js"
@@ -78,10 +78,18 @@ const PaymentRepositoryLive = Layer.effect(
     const sql = yield* SqlClient.SqlClient
 
     yield* sql`
-CREATE TYPE payment_status AS ENUM ('PENDING', 'PROCESSED', 'FAILED', 'REFUNDED');
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_type WHERE typname = 'payment_status'
+  ) THEN
+    CREATE TYPE payment_status AS ENUM ('PENDING', 'PROCESSED', 'FAILED', 'REFUNDED');
+  END IF;
+END
+$$;
     `.pipe(Effect.catchTag("SqlError", Effect.die))
     yield* sql`
-CREATE TABLE tbl_payment (
+CREATE TABLE IF NOT EXISTS tbl_payment (
     id UUID PRIMARY KEY,
     amount DECIMAL(15,2) NOT NULL CHECK (amount > 0),
     compensation_key UUID,
@@ -89,11 +97,14 @@ CREATE TABLE tbl_payment (
     idempotency_key UUID NOT NULL,
     order_id UUID NOT NULL,
     saga_log_id UUID NOT NULL,
-    status payment_status NOT NULL DEFAULT 'PENDING',
-
-    INDEX idx_payments_order_id_saga_log_id ON (order_id, saga_log_id),
-    INDEX idx_payments_idempotency_key ON (idempotency_key)
+    status payment_status NOT NULL DEFAULT 'PENDING'
 );
+    `.pipe(Effect.catchTag("SqlError", Effect.die))
+    yield* sql`
+CREATE INDEX IF NOT EXISTS idx_payments_order_id_saga_log_id ON tbl_payment(order_id, saga_log_id);
+    `.pipe(Effect.catchTag("SqlError", Effect.die))
+    yield* sql`
+CREATE INDEX IF NOT EXISTS idx_payments_idempotency_key ON tbl_payment(idempotency_key);
     `.pipe(Effect.catchTag("SqlError", Effect.die))
 
     return {
@@ -386,8 +397,10 @@ const PaymentHttpApiLive = HttpApiBuilder.group(
 
 const PgLive = PgClient.layer({
   database: "effect_pg_dev",
+  password: Redacted.make("password"),
   transformQueryNames: String.camelToSnake,
-  transformResultNames: String.snakeToCamel
+  transformResultNames: String.snakeToCamel,
+  username: "postgres"
 })
 
 const ApplicationLayer = PaymentHttpApiLive.pipe(

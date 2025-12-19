@@ -2,8 +2,7 @@ import { FetchHttpClient, HttpClient, HttpClientRequest } from "@effect/platform
 import { SqlClient } from "@effect/sql"
 import { PgClient } from "@effect/sql-pg"
 import type { Fiber } from "effect"
-import { Config, Console, Context, Duration, Effect, Layer, Schedule, Schema, String } from "effect"
-import { OrderId } from "./Order.js"
+import { Config, Console, Context, Duration, Effect, Layer, Redacted, Schedule, Schema, String } from "effect"
 
 export const OutboxId = Schema.UUID.pipe(
   Schema.brand("OutboxId"),
@@ -13,7 +12,7 @@ export type OutboxId = typeof OutboxId.Type
 
 const OutboxSchema = Schema.Struct({
   id: OutboxId,
-  aggregateId: OrderId,
+  aggregateId: Schema.UUID, // Use UUID directly to avoid circular dependency
   eventType: Schema.Literal(
     "OrderCreated",
     "PaymentProcessed",
@@ -67,13 +66,29 @@ export const OutboxRepositoryLive = Layer.effect(
     const sql = yield* SqlClient.SqlClient
 
     yield* sql`
-CREATE TYPE outbox_event_type AS ENUM ('OrderCreated', 'PaymentProcessed', 'PaymentFailed', 'InventoryUpdated', 'InventoryFailed', 'OrderShipped', 'OrderDelivered', 'OrderCompensated');
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_type WHERE typname = 'outbox_event_type'
+  ) THEN
+    CREATE TYPE outbox_event_type AS ENUM ('OrderCreated', 'PaymentProcessed', 'PaymentFailed', 'InventoryUpdated', 'InventoryFailed', 'OrderShipped', 'OrderDelivered', 'OrderCompensated');
+  END IF;
+END
+$$;
     `.pipe(Effect.catchTag("SqlError", Effect.die))
     yield* sql`
-CREATE TYPE outbox_target_service AS ENUM ('payment', 'inventory', 'shipping', 'order');
+DO $$
+BEGIN
+  IF NOT EXISTS (
+    SELECT 1 FROM pg_type WHERE typname = 'outbox_target_service'
+  ) THEN
+    CREATE TYPE outbox_target_service AS ENUM ('payment', 'inventory', 'shipping', 'order');
+  END IF;
+END
+$$;
     `.pipe(Effect.catchTag("SqlError", Effect.die))
     yield* sql`
-CREATE TABLE tbl_outbox (
+CREATE TABLE IF NOT EXISTS tbl_outbox (
     id UUID PRIMARY KEY,
     aggregate_id UUID NOT NULL,
     event_type outbox_event_type NOT NULL,
@@ -85,10 +100,11 @@ CREATE TABLE tbl_outbox (
     published_at TIMESTAMP WITH TIME ZONE,
     target_endpoint VARCHAR(255) NOT NULL,
     target_service outbox_target_service NOT NULL,
-    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP,
-
-    INDEX idx_outbox_is_pblished (is_pblished) WHERE is_published = FALSE
+    created_at TIMESTAMP WITH TIME ZONE NOT NULL DEFAULT CURRENT_TIMESTAMP
 );
+    `.pipe(Effect.catchTag("SqlError", Effect.die))
+    yield* sql`
+CREATE INDEX IF NOT EXISTS idx_outbox_is_published ON tbl_outbox(is_published) WHERE is_published = FALSE;
     `.pipe(Effect.catchTag("SqlError", Effect.die))
 
     return {
@@ -314,8 +330,10 @@ const OutboxPublisherLive = Layer.scoped(
 
 const PgLive = PgClient.layer({
   database: "effect_pg_dev",
+  password: Redacted.make("password"),
   transformQueryNames: String.camelToSnake,
-  transformResultNames: String.snakeToCamel
+  transformResultNames: String.snakeToCamel,
+  username: "postgres"
 })
 
 export const ApplicationLayer = OutboxPublisherLive.pipe(
