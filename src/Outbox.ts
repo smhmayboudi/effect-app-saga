@@ -68,10 +68,10 @@ export const OutboxRepositoryLive = Layer.effect(
 
     yield* sql`
 CREATE TYPE outbox_event_type AS ENUM ('OrderCreated', 'PaymentProcessed', 'PaymentFailed', 'InventoryUpdated', 'InventoryFailed', 'OrderShipped', 'OrderDelivered', 'OrderCompensated');
-    `
+    `.pipe(Effect.catchTag("SqlError", Effect.die))
     yield* sql`
 CREATE TYPE outbox_target_service AS ENUM ('payment', 'inventory', 'shipping', 'order');
-    `
+    `.pipe(Effect.catchTag("SqlError", Effect.die))
     yield* sql`
 CREATE TABLE tbl_outbox (
     id UUID PRIMARY KEY,
@@ -89,7 +89,7 @@ CREATE TABLE tbl_outbox (
 
     INDEX idx_outbox_is_pblished (is_pblished) WHERE is_published = FALSE
 );
-    `
+    `.pipe(Effect.catchTag("SqlError", Effect.die))
 
     return {
       findUnpublished: ({ batchSize }) =>

@@ -73,7 +73,7 @@ const ShippingRepositoryLive = Layer.effect(
     yield* sql`
 -- Create ENUM type for shipping status
 CREATE TYPE shipping_status AS ENUM ('PENDING', 'SHIPPED', 'DELIVERED', 'CANCELLED');
-    `
+    `.pipe(Effect.catchTag("SqlError", Effect.die))
     yield* sql`
 -- Create the shipping table without foreign key constraints
 CREATE TABLE tbl_shipping (
@@ -89,7 +89,7 @@ CREATE TABLE tbl_shipping (
     INDEX idx_shipping_idempotency_key ON (idempotency_key),
     INDEX idx_shipping_saga_log_id ON (saga_log_id)
 );
-    `
+    `.pipe(Effect.catchTag("SqlError", Effect.die))
 
     return {
       findOne: ({ compensationOrder, idempotencyKey, sagaLogId, shippingId }) =>

@@ -73,7 +73,7 @@ const PaymentRepositoryLive = Layer.effect(
 
     yield* sql`
 CREATE TYPE payment_status AS ENUM ('PENDING', 'PROCESSED', 'FAILED', 'REFUNDED');
-    `
+    `.pipe(Effect.catchTag("SqlError", Effect.die))
     yield* sql`
 CREATE TABLE tbl_payment (
     id UUID PRIMARY KEY,
@@ -88,7 +88,7 @@ CREATE TABLE tbl_payment (
     INDEX idx_payments_order_id_saga_log_id ON (order_id, saga_log_id),
     INDEX idx_payments_idempotency_key ON (idempotency_key)
 );
-    `
+    `.pipe(Effect.catchTag("SqlError", Effect.die))
 
     return {
       findOne: ({ idempotencyKey, orderSagaLog, paymentId }) =>

@@ -85,7 +85,7 @@ CREATE TABLE tbl_inventory (
     
     CONSTRAINT reserved_quantity_valid CHECK (reserved_quantity <= quantity)
 );
-    `
+    `.pipe(Effect.catchTag("SqlError", Effect.die))
 
     return {
       findOne: ({ compensationOrder, lastIdempotencyKey, productId }) =>

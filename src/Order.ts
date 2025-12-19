@@ -67,7 +67,7 @@ const OrderRepositoryLive = Layer.effect(
 
     yield* sql`
 CREATE TYPE order_status AS ENUM ('PENDING', 'CONFIRMED', 'FAILED', 'COMPENSATED');
-    `
+    `.pipe(Effect.catchTag("SqlError", Effect.die))
     yield* sql`
 CREATE TABLE orders (
     id UUID PRIMARY KEY DEFAULT gen_random_uuid(),
@@ -78,7 +78,7 @@ CREATE TABLE orders (
     status order_status NOT NULL DEFAULT 'PENDING',
     total_price DECIMAL(10, 2) NOT NULL CHECK (total_price >= 0)
 );
-    `
+    `.pipe(Effect.catchTag("SqlError", Effect.die))
 
     return {
       findOne: ({ orderId }) =>
