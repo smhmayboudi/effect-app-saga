@@ -34,7 +34,7 @@
     "@effect/sql": "latest",
     "@effect/sql-pg": "latest",
     "effect": "latest",
-    "uuid": "^13.0.0"
+    "uuid": "^14.0.0"
   },
   "devDependencies": {
     "@babel/cli": "^7.24.8",
